@@ -781,3 +781,6 @@ if (isMain) {
 }
 
 export { ServerIdentity, ServerFileSystem, ServerAgent, PeerNodeServer, createServerKernel }
+
+// New: ServerPod extends Pod — preferred over PeerNodeServer
+export { ServerPod } from './server-pod.mjs'

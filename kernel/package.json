@@ -9,6 +9,8 @@
     "test": "node --test kernel.test.mjs"
   },
   "dependencies": {
+    "browsermesh-pod": "file:../../browsermesh-pod",
+    "browsermesh-primitives": "file:../../browsermesh-primitives",
     "multicast-dns": "^7.2.5",
     "ws": "^8.16.0"
   }
