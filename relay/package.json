@@ -1,5 +1,5 @@
 {
-  "name": "@mesh-servers/relay",
+  "name": "@browsermesh-servers/relay",
   "version": "0.1.0",
   "private": true,
   "type": "module",

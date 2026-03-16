@@ -1,5 +1,5 @@
 {
-  "name": "mesh-servers",
+  "name": "browsermesh-servers",
   "version": "0.1.0",
   "private": true,
   "description": "Signaling, relay, and kernel servers for BrowserMesh",

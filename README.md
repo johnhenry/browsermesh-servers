@@ -1,4 +1,4 @@
-# mesh-servers
+# browsermesh-servers
 
 Three standalone Node.js services that support browser-based P2P mesh networking. Each is independently deployable with zero shared dependencies beyond `ws`.
 

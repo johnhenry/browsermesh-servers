@@ -1,5 +1,5 @@
 {
-  "name": "@mesh-servers/signaling",
+  "name": "@browsermesh-servers/signaling",
   "version": "0.1.0",
   "private": true,
   "type": "module",
