@@ -15,5 +15,8 @@
     "start:relay": "npm start --workspace=relay",
     "start:kernel": "npm start --workspace=kernel"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  }
 }
