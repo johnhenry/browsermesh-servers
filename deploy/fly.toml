@@ -1,0 +1,34 @@
+app = "clawser-signaling"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 1024
+    soft_limit = 800
+
+  [[http_service.checks]]
+    interval = "10s"
+    timeout = "3s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/health"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8787
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

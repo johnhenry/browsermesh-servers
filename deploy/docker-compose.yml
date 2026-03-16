@@ -1,0 +1,52 @@
+services:
+  signaling:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - AUTH_MODE=open
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: node relay/index.mjs
+    ports:
+      - "8788:8788"
+    environment:
+      - PORT=8788
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8788/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  kernel:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["node", "kernel/index.mjs"]
+    environment:
+      - SIGNALING_URL=ws://signaling:8787
+      - DATA_DIR=/data
+      - AGENT_NAME=server-agent
+      - POD_LABEL=kernel-pod
+    volumes:
+      - kernel-data:/data
+    depends_on:
+      signaling:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  kernel-data:

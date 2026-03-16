@@ -1,0 +1,19 @@
+{
+  "name": "mesh-servers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Signaling, relay, and kernel servers for BrowserMesh",
+  "type": "module",
+  "workspaces": [
+    "signaling",
+    "relay",
+    "kernel"
+  ],
+  "scripts": {
+    "test": "npm test --workspace=signaling && npm test --workspace=relay && npm test --workspace=kernel",
+    "start:signaling": "npm start --workspace=signaling",
+    "start:relay": "npm start --workspace=relay",
+    "start:kernel": "npm start --workspace=kernel"
+  },
+  "license": "MIT"
+}
