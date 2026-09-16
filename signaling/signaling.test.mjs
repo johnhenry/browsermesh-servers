@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { createServer } from './index.mjs'
 import { getIceServers, DEFAULT_STUN_SERVERS } from './stun-turn.mjs'
 import WebSocket from 'ws'
+import { SignalingClient } from '@johnhenry/browsermesh-core'
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -795,5 +796,75 @@ describe('signaling AUTH_MODE=open', () => {
 
     ws.close()
     await instance.close()
+  })
+})
+
+// ─── Real cross-package integration: @johnhenry/browsermesh-core's
+// SignalingClient against this real server ────────────────────────────
+//
+// Everything above tests this server's protocol using raw `ws` messages
+// shaped BY HAND to match it. That's the right unit-level test for the
+// server itself, but it can't catch a client-side bug where the actual
+// SignalingClient library sends a DIFFERENT shape than this server
+// expects -- which is exactly what happened before browsermesh-core
+// 0.2.2 (SignalingClient sent "to", this server has only ever read
+// "target"; every real offer/answer/ice-candidate was silently
+// rejected). This exercises the real published client against the
+// real server, no hand-shaped messages on either side.
+
+describe('real SignalingClient (browsermesh-core) against this real server', () => {
+  let instance
+  let port
+
+  beforeEach(async () => {
+    instance = createServer({ port: 0, authMode: 'open' })
+    port = await instance.listen(0)
+  })
+
+  afterEach(async () => {
+    await instance.close()
+  })
+
+  it('two real SignalingClients exchange an offer/answer/ice-candidate round trip', async () => {
+    const alice = new SignalingClient({
+      url: `ws://127.0.0.1:${port}`,
+      localPodId: 'pod-alice',
+      _WebSocket: WebSocket,
+    })
+    const bob = new SignalingClient({
+      url: `ws://127.0.0.1:${port}`,
+      localPodId: 'pod-bob',
+      _WebSocket: WebSocket,
+    })
+
+    await alice.connect()
+    await bob.connect()
+
+    const bobReceivedOffer = new Promise((resolve) => {
+      bob.onOffer((data, fromPodId) => resolve({ data, fromPodId }))
+    })
+    alice.sendOffer('pod-bob', { sdp: 'real-offer-sdp' })
+    const offerResult = await bobReceivedOffer
+    assert.equal(offerResult.fromPodId, 'pod-alice')
+    assert.deepEqual(offerResult.data.offer, { sdp: 'real-offer-sdp' })
+
+    const aliceReceivedAnswer = new Promise((resolve) => {
+      alice.onAnswer((data, fromPodId) => resolve({ data, fromPodId }))
+    })
+    bob.sendAnswer('pod-alice', { sdp: 'real-answer-sdp' })
+    const answerResult = await aliceReceivedAnswer
+    assert.equal(answerResult.fromPodId, 'pod-bob')
+    assert.deepEqual(answerResult.data.answer, { sdp: 'real-answer-sdp' })
+
+    const bobReceivedIce = new Promise((resolve) => {
+      bob.onIceCandidate((data, fromPodId) => resolve({ data, fromPodId }))
+    })
+    alice.sendIceCandidate('pod-bob', { candidate: 'real-ice-candidate' })
+    const iceResult = await bobReceivedIce
+    assert.equal(iceResult.fromPodId, 'pod-alice')
+    assert.deepEqual(iceResult.data.candidate, { candidate: 'real-ice-candidate' })
+
+    alice.disconnect()
+    bob.disconnect()
   })
 })
