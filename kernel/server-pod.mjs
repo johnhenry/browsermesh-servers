@@ -8,8 +8,8 @@
  * model as browser pods. Node.js 24+ has full crypto.subtle Ed25519 support.
  */
 
-import { Pod, EventEmitterTransport, NullDiscovery } from 'browsermesh-pod'
-import { PodIdentity } from 'browsermesh-primitives'
+import { Pod, EventEmitterTransport, NullDiscovery } from '@johnhenry/browsermesh-pod'
+import { PodIdentity } from '@johnhenry/browsermesh-primitives'
 import { hostname } from 'node:os'
 import { webcrypto } from 'node:crypto'
 import { ServerFileSystem } from './index.mjs'
