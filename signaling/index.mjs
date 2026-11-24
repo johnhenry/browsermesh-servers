@@ -16,23 +16,31 @@
  *
  * HTTP endpoints:
  *   GET /health      → { status: 'ok', peers: N }
- *   GET /ice-servers  → ICE server configuration array
+ *   GET /ice-servers  → ICE server configuration array (time-limited TURN
+ *                       credentials). Answered only to a caller that sends
+ *                       `Authorization: Bearer <ICE_API_TOKEN>` or that is the
+ *                       same origin as this server; rate limited per address.
  *
  * Env vars:
  *   PORT        — listen port (default 8787)
- *   ORIGINS     — comma-separated allowed origins (empty = allow all)
+ *   ORIGINS     — comma-separated allowed origins (empty = allow all WebSocket
+ *                 origins; CORS is granted only to an exactly listed origin)
  *   AUTH_MODE   — 'open' (default) | 'authenticated' (stub)
- *   ICE_SERVERS — JSON array override for ICE config
+ *   ICE_SERVERS, STUN_URLS, ALLOW_PUBLIC_STUN, TURN_URLS, TURN_SECRET,
+ *   TURN_TTL_SECONDS — see stun-turn.mjs
  *   MAX_CONNECTIONS       — max concurrent WebSocket connections (default 1024)
  *   MAX_MESSAGES_PER_MINUTE — per-pod rate limit (default 300)
- *   ICE_API_TOKEN         — Bearer token to protect /ice-servers endpoint
+ *   ICE_API_TOKEN         — Bearer token that unlocks /ice-servers for non-same-origin callers
+ *   ICE_RATE_LIMIT_PER_MINUTE — /ice-servers requests per client address (default 30)
+ *   TRUST_PROXY           — set to 1 behind a proxy that sets Fly-Client-IP / X-Forwarded-For
  */
 
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { webcrypto } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { getIceServers } from './stun-turn.mjs'
+import { getIceServers, assertIceConfig } from './stun-turn.mjs'
+import { RateLimiter, safeEqual, clientIp, envFlag } from './limits.mjs'
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -74,7 +82,12 @@ export function createServer(opts = {}) {
   const port = opts.port ?? (Number(env.PORT) || 8787)
   const allowedOrigins = parseOrigins(opts.origins ?? env.ORIGINS)
   const authMode = opts.authMode ?? env.AUTH_MODE ?? 'open'
-  const iceServers = getIceServers(env)
+  assertIceConfig(env) // fail at startup on an unusable TURN_SECRET
+  const trustProxy = envFlag(env.TRUST_PROXY)
+  const iceRateLimiter = new RateLimiter({
+    limit: Number(env.ICE_RATE_LIMIT_PER_MINUTE) || 30,
+    windowMs: 60_000,
+  })
   const maxConnections = opts.maxConnections ?? (Number(env.MAX_CONNECTIONS) || 1024)
   const maxMessagesPerMinute = opts.maxMessagesPerMinute ?? (Number(env.MAX_MESSAGES_PER_MINUTE) || 300)
   const iceApiToken = env.ICE_API_TOKEN ?? null
@@ -101,37 +114,90 @@ export function createServer(opts = {}) {
 
   // ── HTTP server ──────────────────────────────────────────────────
 
+  /**
+   * CORS headers for a request: the request's Origin is reflected only when it
+   * is exactly one of the configured ORIGINS (never a wildcard), and the
+   * response then varies by Origin.
+   */
+  function corsHeaders(req) {
+    const origin = req.headers.origin
+    const headers = { Vary: 'Origin' }
+    if (origin && allowedOrigins && allowedOrigins.includes(origin)) {
+      headers['Access-Control-Allow-Origin'] = origin
+    }
+    return headers
+  }
+
+  /** True when the caller is the page this server itself serves (same origin). */
+  function isSameOrigin(req) {
+    if (req.headers['sec-fetch-site'] === 'same-origin') return true
+    const origin = req.headers.origin
+    const host = req.headers.host
+    if (!origin || !host) return false
+    try {
+      return new URL(origin).host === host
+    } catch {
+      return false
+    }
+  }
+
+  /** Bearer token check, constant time. */
+  function hasValidToken(req) {
+    if (!iceApiToken) return false
+    const auth = req.headers.authorization
+    if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) return false
+    return safeEqual(auth.slice(7), iceApiToken)
+  }
+
   const server = http.createServer((req, res) => {
+    let pathname
+    try {
+      pathname = new URL(req.url, 'http://localhost').pathname
+    } catch {
+      res.writeHead(400)
+      return res.end()
+    }
+
     // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
+        ...corsHeaders(req),
         'Access-Control-Allow-Methods': 'GET, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        'Access-Control-Max-Age': '600',
       })
       return res.end()
     }
 
     const headers = {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+      ...corsHeaders(req),
     }
 
-    if (req.method === 'GET' && req.url === '/health') {
+    if (req.method === 'GET' && pathname === '/health') {
       res.writeHead(200, headers)
       return res.end(JSON.stringify({ status: 'ok', peers: peers.size }))
     }
 
-    if (req.method === 'GET' && req.url === '/ice-servers') {
-      if (iceApiToken) {
-        const auth = req.headers.authorization
-        if (!auth || auth !== `Bearer ${iceApiToken}`) {
-          res.writeHead(401, headers)
-          return res.end(JSON.stringify({ error: 'unauthorized' }))
-        }
+    if (req.method === 'GET' && pathname === '/ice-servers') {
+      headers['Cache-Control'] = 'no-store'
+
+      // Rate limit first, so failed attempts cost the caller too.
+      const rl = iceRateLimiter.hit(clientIp(req, trustProxy))
+      if (!rl.ok) {
+        res.writeHead(429, { ...headers, 'Retry-After': String(Math.ceil(rl.retryAfterMs / 1000)) })
+        return res.end(JSON.stringify({ error: 'rate limit exceeded' }))
       }
+
+      // Only a caller holding the token, or the page this server itself
+      // serves, gets credentials. Everyone else is refused.
+      if (!hasValidToken(req) && !isSameOrigin(req)) {
+        res.writeHead(401, headers)
+        return res.end(JSON.stringify({ error: 'unauthorized' }))
+      }
+
       res.writeHead(200, headers)
-      return res.end(JSON.stringify(iceServers))
+      return res.end(JSON.stringify(getIceServers(env)))
     }
 
     res.writeHead(404, headers)
