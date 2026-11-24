@@ -33,6 +33,7 @@ export class ServerPod extends Pod {
   #label
   #mdns = null
   #mdnsPort = null
+  #mdnsLegacy = true
   #onLog
 
   /**
@@ -46,6 +47,7 @@ export class ServerPod extends Pod {
    * @param {string} [opts.llmApiKey]         — API key for the LLM provider
    * @param {string} [opts.llmModel]          — model name override
    * @param {number} [opts.mdnsPort]          — port to advertise via mDNS (enables LAN discovery)
+   * @param {boolean} [opts.mdnsLegacy]       — false: do not use the legacy `_clawser` mDNS service name
    * @param {string[]} [opts.remoteServices]  — services remote callers may reach (default: fs, agent)
    * @param {(msg: string) => void} [opts.onLog]
    */
@@ -63,6 +65,7 @@ export class ServerPod extends Pod {
     this.#label = opts.label ?? hostname()
     this.#serviceToken = opts.serviceToken ?? webcrypto.randomUUID()
     this.#mdnsPort = opts.mdnsPort ?? null
+    this.#mdnsLegacy = opts.mdnsLegacy !== false
     this.#onLog = opts.onLog ?? console.log
 
     // Register built-in services
@@ -121,6 +124,7 @@ export class ServerPod extends Pod {
         this.#mdns = new MdnsDiscovery({
           podId: this.podId,
           port: this.#mdnsPort,
+          legacy: this.#mdnsLegacy,
           label: this.#label,
           onLog: this.#onLog,
         })

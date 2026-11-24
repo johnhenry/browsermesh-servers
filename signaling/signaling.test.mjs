@@ -1,5 +1,5 @@
 /**
- * Tests for the Clawser P2P signaling server.
+ * Tests for the BrowserMesh signaling server.
  *
  * Uses real HTTP + WebSocket connections against a server started on an
  * OS-assigned ephemeral port (port 0).  This avoids mocking and tests
@@ -406,7 +406,7 @@ describe('origin restriction', () => {
   let port
 
   beforeEach(async () => {
-    instance = createServer({ port: 0, origins: 'http://localhost:3000,https://clawser.app' })
+    instance = createServer({ port: 0, origins: 'http://localhost:3000,https://app.example' })
     port = await instance.listen(0)
   })
 

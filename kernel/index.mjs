@@ -1,5 +1,5 @@
 /**
- * Clawser Server-Side Kernel — Always-On Mesh Peer
+ * BrowserMesh Server-Side Kernel — Always-On Mesh Peer
  *
  * Provides the same identity/capability model as browser peers but runs
  * in Node.js. Can host agent instances, serve files, and run compute jobs.
@@ -317,7 +317,7 @@ class ServerAgent {
    */
   constructor({ name, systemPrompt, maxMemories, provider, apiKey, model }) {
     this.#name = name
-    this.#systemPrompt = systemPrompt ?? `You are ${name}, a server-side Clawser agent.`
+    this.#systemPrompt = systemPrompt ?? `You are ${name}, a server-side BrowserMesh agent.`
     this.#memories = []
     this.#maxMemories = maxMemories ?? 1024
     this.#provider = provider ?? null
@@ -517,6 +517,7 @@ class PeerNodeServer {
   #serviceToken
   #mdns = null
   #mdnsPort = null
+  #mdnsLegacy = true
 
   /**
    * @param {object} opts
@@ -533,7 +534,7 @@ class PeerNodeServer {
    * @param {string[]} [opts.remoteServices] — services remote callers may reach (default: fs, agent)
    * @param {(msg: string) => void} [opts.onLog]
    */
-  constructor({ identity, dataDir, signalingUrl, agentName, serviceToken, maxMemories, llmProvider, llmApiKey, llmModel, mdnsPort, remoteServices, onLog }) {
+  constructor({ identity, dataDir, signalingUrl, agentName, serviceToken, maxMemories, llmProvider, llmApiKey, llmModel, mdnsPort, mdnsLegacy, remoteServices, onLog }) {
     this.#identity = identity
     this.#services = new ServiceRegistry(remoteServices ? { remote: remoteServices } : undefined)
     this.#fileSystem = new ServerFileSystem(dataDir ?? './data')
@@ -547,6 +548,7 @@ class PeerNodeServer {
     this.#signalingUrl = signalingUrl ?? null
     this.#serviceToken = serviceToken ?? webcrypto.randomUUID()
     this.#mdnsPort = mdnsPort ?? null
+    this.#mdnsLegacy = mdnsLegacy !== false
     this.#onLog = onLog ?? console.log
 
     // Register built-in services
@@ -589,6 +591,7 @@ class PeerNodeServer {
         this.#mdns = new MdnsDiscovery({
           podId: this.#identity.podId,
           port: this.#mdnsPort,
+          legacy: this.#mdnsLegacy,
           label: this.#identity.label,
           onLog: this.#onLog,
         })
@@ -768,6 +771,7 @@ async function createServerKernel(opts = {}) {
     llmApiKey: opts.llmApiKey,
     llmModel: opts.llmModel,
     mdnsPort: opts.mdnsPort,
+    mdnsLegacy: opts.mdnsLegacy,
     remoteServices: opts.remoteServices,
     onLog: opts.onLog,
   })
@@ -789,6 +793,7 @@ if (isMain) {
     llmApiKey: env.LLM_API_KEY || undefined,
     llmModel: env.LLM_MODEL || undefined,
     mdnsPort: Number(env.MDNS_PORT) || undefined,
+    mdnsLegacy: env.MDNS_LEGACY === 'false' ? false : undefined,
     onLog: console.log,
   })
 

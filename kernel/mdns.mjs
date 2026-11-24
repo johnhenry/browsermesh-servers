@@ -1,14 +1,19 @@
 /**
- * mDNS/DNS-SD discovery for server-side Clawser pods.
+ * mDNS/DNS-SD discovery for server-side BrowserMesh pods.
  *
- * Advertises the local pod as a `_clawser._tcp.local` service and
+ * Advertises the local pod as a `_browsermesh._tcp.local` service and
  * discovers other pods on the LAN. Browser pods benefit transitively
  * through PEX (Peer Exchange) — they connect to any server pod and
  * receive the full peer list.
  *
- * Env vars:
- *   MDNS_ENABLED   — set to 'true' to enable (default: false)
- *   MDNS_PORT      — port to advertise (default: signaling port)
+ * The service used to be named `_clawser._tcp.local`. Both names are
+ * advertised, queried and accepted so older pods keep finding each other;
+ * pass `legacy: false` (env `MDNS_LEGACY=false` in kernel/index.mjs) to use
+ * only the new name.
+ *
+ * Env vars (read by kernel/index.mjs):
+ *   MDNS_PORT      — port to advertise; setting it enables mDNS (default: off)
+ *   MDNS_LEGACY    — 'false' stops using the legacy `_clawser` service name
  *
  * Usage:
  *   const mdns = new MdnsDiscovery({ podId, port, onLog })
@@ -23,12 +28,13 @@ import { hostname } from 'node:os'
 
 // ─── Constants ───────────────────────────────────────────────────────
 
-const SERVICE_TYPE = '_clawser._tcp.local'
+const SERVICE_TYPE = '_browsermesh._tcp.local'
+const LEGACY_SERVICE_TYPE = '_clawser._tcp.local'
 const ANNOUNCE_INTERVAL_MS = 15_000
 const DEFAULT_TTL = 120 // seconds
 
 const DEFAULT_MAX_PEERS = 256
-const INSTANCE_NAME_RE = /^([A-Za-z0-9_-]{1,128})\._clawser\._tcp\.local$/
+const INSTANCE_NAME_RE = /^([A-Za-z0-9_-]{1,128})\.(_browsermesh|_clawser)\._tcp\.local$/
 const HOST_RE = /^[^\s\u0000-\u001f\u007f-\u009f]+$/u
 
 /** A display label from the network: no control characters, bounded length. */
@@ -50,6 +56,7 @@ export class MdnsDiscovery {
   #running = false
   #maxPeers
   #createMdns
+  #serviceTypes
 
   /** @type {Map<string, { podId: string, host: string, port: number, label: string, discoveredAt: number }>} */
   #peers = new Map()
@@ -66,8 +73,10 @@ export class MdnsDiscovery {
    * @param {(msg: string) => void} [opts.onLog]
    * @param {number} [opts.maxPeers] — most peers remembered (default 256)
    * @param {() => object} [opts.createMdns] — socket factory (default: multicast-dns), for tests
+   * @param {boolean} [opts.legacy] — also use the legacy `_clawser._tcp.local` name (default true)
    */
-  constructor({ podId, port, label, host, onLog, maxPeers, createMdns }) {
+  constructor({ podId, port, label, host, onLog, maxPeers, createMdns, legacy }) {
+    this.#serviceTypes = legacy === false ? [SERVICE_TYPE] : [SERVICE_TYPE, LEGACY_SERVICE_TYPE]
     if (!podId || typeof podId !== 'string') {
       throw new Error('podId is required')
     }
@@ -103,7 +112,7 @@ export class MdnsDiscovery {
     // Respond to queries for our service type
     this.#mdns.on('query', (query) => {
       const isOurs = Array.isArray(query?.questions) && query.questions.some(q =>
-        q?.name === SERVICE_TYPE || q?.name === `${this.#podId}.${SERVICE_TYPE}`
+        this.#serviceTypes.some(t => q?.name === t || q?.name === `${this.#podId}.${t}`)
       )
       if (isOurs) this.#announce()
     })
@@ -179,13 +188,13 @@ export class MdnsDiscovery {
   #announce() {
     if (!this.#mdns) return
 
-    const instanceName = `${this.#podId}.${SERVICE_TYPE}`
-
-    this.#mdns.respond({
-      answers: [
+    const answers = []
+    for (const type of this.#serviceTypes) {
+      const instanceName = `${this.#podId}.${type}`
+      answers.push(
         // PTR — service type points to our instance
         {
-          name: SERVICE_TYPE,
+          name: type,
           type: 'PTR',
           ttl: DEFAULT_TTL,
           data: instanceName,
@@ -212,36 +221,31 @@ export class MdnsDiscovery {
             `label=${this.#label}`,
           ],
         },
-      ],
-    })
+      )
+    }
+    this.#mdns.respond({ answers })
   }
 
   /** Send a goodbye announcement (TTL=0). */
   #sendGoodbye() {
     if (!this.#mdns) return
 
-    const instanceName = `${this.#podId}.${SERVICE_TYPE}`
-
     this.#mdns.respond({
-      answers: [
-        {
-          name: SERVICE_TYPE,
-          type: 'PTR',
-          ttl: 0,
-          data: instanceName,
-        },
-      ],
+      answers: this.#serviceTypes.map(type => ({
+        name: type,
+        type: 'PTR',
+        ttl: 0,
+        data: `${this.#podId}.${type}`,
+      })),
     })
   }
 
-  /** Query the network for other clawser pods. */
+  /** Query the network for other BrowserMesh pods. */
   #query() {
     if (!this.#mdns) return
 
     this.#mdns.query({
-      questions: [
-        { name: SERVICE_TYPE, type: 'PTR' },
-      ],
+      questions: this.#serviceTypes.map(type => ({ name: type, type: 'PTR' })),
     })
   }
 
@@ -264,12 +268,9 @@ export class MdnsDiscovery {
     ]
     for (const answer of records) {
       if (!answer || typeof answer !== 'object' || typeof answer.name !== 'string') continue
-      if (answer.type === 'SRV' && answer.name.endsWith(SERVICE_TYPE)) {
-        srvRecords.set(answer.name, answer.data)
-      }
-      if (answer.type === 'TXT' && answer.name.endsWith(SERVICE_TYPE)) {
-        txtRecords.set(answer.name, answer.data)
-      }
+      if (!this.#serviceTypes.some(t => answer.name.endsWith(`.${t}`))) continue
+      if (answer.type === 'SRV') srvRecords.set(answer.name, answer.data)
+      if (answer.type === 'TXT') txtRecords.set(answer.name, answer.data)
     }
 
     // Match SRV + TXT records for each instance

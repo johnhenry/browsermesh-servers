@@ -34,6 +34,58 @@ function announce(podId, { port = 8787, target = 'host.local', txt, name } = {})
   }
 }
 
+describe('MdnsDiscovery service names', () => {
+  it('advertises and queries under the BrowserMesh name and the legacy one', async () => {
+    const sent = []
+    const fake = new FakeMdns()
+    fake.respond = (p) => sent.push(['respond', p])
+    fake.query = (p) => sent.push(['query', p])
+    const mdns = new MdnsDiscovery({ podId: 'me', port: 9, onLog: () => {}, createMdns: () => fake })
+    await mdns.start()
+    const names = (kind) => sent.filter(([k]) => k === kind).flatMap(([, p]) => (p.answers ?? p.questions).map(r => r.name))
+    for (const kind of ['respond', 'query']) {
+      assert.ok(names(kind).includes('_browsermesh._tcp.local'), kind)
+      assert.ok(names(kind).includes('_clawser._tcp.local'), kind)
+    }
+    await mdns.stop()
+  })
+
+  it('legacy: false stops using the old name', async () => {
+    const sent = []
+    const fake = new FakeMdns()
+    fake.respond = (p) => sent.push(p)
+    fake.query = (p) => sent.push(p)
+    const mdns = new MdnsDiscovery({ podId: 'me', port: 9, onLog: () => {}, createMdns: () => fake, legacy: false })
+    await mdns.start()
+    assert.ok(!JSON.stringify(sent).includes('_clawser'))
+    fake.emit('response', announce('pod-old'))
+    assert.equal(mdns.peerCount, 0)
+    await mdns.stop()
+  })
+
+  it('discovers peers announced under either name', async () => {
+    const { fake, mdns } = await setup()
+    fake.emit('response', announce('pod-new', { name: 'pod-new._browsermesh._tcp.local' }))
+    fake.emit('response', announce('pod-old'))
+    assert.deepEqual(mdns.listPeers().map(p => p.podId).sort(), ['pod-new', 'pod-old'])
+    await mdns.stop()
+  })
+
+  it('answers a query for either name', async () => {
+    const sent = []
+    const fake = new FakeMdns()
+    fake.respond = (p) => sent.push(p)
+    const mdns = new MdnsDiscovery({ podId: 'me', port: 9, onLog: () => {}, createMdns: () => fake })
+    await mdns.start()
+    for (const name of ['_browsermesh._tcp.local', '_clawser._tcp.local']) {
+      const before = sent.length
+      fake.emit('query', { questions: [{ name }] })
+      assert.ok(sent.length > before, name)
+    }
+    await mdns.stop()
+  })
+})
+
 describe('MdnsDiscovery input handling', () => {
   it('discovers a well-formed peer', async () => {
     const { fake, mdns } = await setup()
