@@ -1,18 +1,36 @@
 /**
- * Clawser P2P Mesh — WebSocket Signaling Server
+ * BrowserMesh WebSocket Signaling Server
  *
- * Adapted from the webrtc-chat server pattern but uses podId-based
- * registration instead of URL params.
+ * Pods register with a pod id, then exchange offers/answers/ICE candidates
+ * through the server. The server forwards; it never interprets the payload.
+ *
+ * Two registration modes (AUTH_MODE):
+ *
+ *   open (default)  — any pod id is accepted. Nothing proves who a client is,
+ *                     so every peer is stamped `verified: false` (in
+ *                     `registered`, `peers`, `peer-joined`, and `sourceVerified`
+ *                     on every forwarded message) and clients can tell.
+ *   authenticated   — protocol 2, see auth.mjs. A pod id must be the hash of
+ *                     the Ed25519 key the client proves it holds, by signing a
+ *                     single-use server nonce together with the id, the
+ *                     server's origin and a purpose. Peers are stamped
+ *                     `verified: true`. A client that does not speak protocol 2
+ *                     is refused with `code: 'protocol-unsupported'`.
  *
  * Protocol:
- *   1. Client connects via WebSocket
- *   2. Client sends: { type: 'register', podId: '<unique-id>' }
- *   3. Server confirms: { type: 'registered', podId }
- *   4. Server broadcasts: { type: 'peers', peers: [...] }
+ *   1. Client connects via WebSocket. (authenticated: server sends
+ *      { type: 'challenge', protocol: 2, purpose, origin, nonce, ttlMs })
+ *   2. Client sends: { type: 'register', podId } (authenticated: plus
+ *      protocol: 2, pubKey, nonce, signature)
+ *   3. Server confirms: { type: 'registered', podId, mode, verified }
+ *   4. Server sends the new peer { type: 'peers', peers: [...], verified } and
+ *      tells the others { type: 'peer-joined', podId, verified }
+ *      (PEER_DISCOVERY=none turns these, and peer-left, off)
  *   5. Client sends signaling messages:
  *        { type: 'offer'|'answer'|'ice-candidate'|'signal', target: '<podId>', ...payload }
- *   6. Server forwards to target with `source` field injected
- *   7. On disconnect, server broadcasts: { type: 'disconnected', podId }
+ *   6. Server forwards to target with `source`, `from` and `sourceVerified`
+ *      set by the server (whatever the sender put there is overwritten)
+ *   7. On disconnect, server tells the others { type: 'peer-left', podId }
  *
  * HTTP endpoints:
  *   GET /health      → { status: 'ok', peers: N }
@@ -23,13 +41,21 @@
  *
  * Env vars:
  *   PORT        — listen port (default 8787)
- *   ORIGINS     — comma-separated allowed origins (empty = allow all WebSocket
- *                 origins; CORS is granted only to an exactly listed origin)
- *   AUTH_MODE   — 'open' (default) | 'authenticated' (stub)
+ *   ORIGINS     — comma-separated allowed origins for WebSocket upgrades (empty =
+ *                 allow all) and for CORS (granted only to an exactly listed origin)
+ *   AUTH_MODE   — 'open' (default) | 'authenticated'; anything else is an error
+ *   PUBLIC_ORIGIN — authenticated mode: this server's own ws:// or wss:// origin
+ *                 (what clients sign); required there
+ *   AUTH_NONCE_TTL_MS — lifetime of a challenge (default 30000)
+ *   PEER_DISCOVERY — 'all' (default) | 'none': whether peers learn the other pod ids
  *   ICE_SERVERS, STUN_URLS, ALLOW_PUBLIC_STUN, TURN_URLS, TURN_SECRET,
  *   TURN_TTL_SECONDS — see stun-turn.mjs
  *   MAX_CONNECTIONS       — max concurrent WebSocket connections (default 1024)
- *   MAX_MESSAGES_PER_MINUTE — per-pod rate limit (default 300)
+ *   MAX_CONNECTIONS_PER_IP — max concurrent connections per client address (default 100)
+ *   MAX_CONNECTS_PER_MINUTE_PER_IP — new connections per client address per minute (default 120)
+ *   MAX_MESSAGES_PER_MINUTE — per-connection message limit (default 300)
+ *   MAX_BUFFERED_BYTES    — a receiver with more than this unsent is dropped (default 1 MiB)
+ *   IDLE_TIMEOUT_MS       — close a registered connection that sent nothing for this long (default 0 = off)
  *   ICE_API_TOKEN         — Bearer token that unlocks /ice-servers for non-same-origin callers
  *   ICE_RATE_LIMIT_PER_MINUTE — /ice-servers requests per client address (default 30)
  *   TRUST_PROXY           — set to 1 behind a proxy that sets Fly-Client-IP / X-Forwarded-For
@@ -37,12 +63,16 @@
 
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { webcrypto } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import { getIceServers, assertIceConfig } from './stun-turn.mjs'
 import { RateLimiter, safeEqual, clientIp, envFlag } from './limits.mjs'
+import { PROTOCOL_VERSION, REGISTER_PURPOSE, verifyRegistration } from './auth.mjs'
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+
+const MAX_MESSAGE_BYTES = 64 * 1024
+const PRE_REGISTRATION_MESSAGE_LIMIT = 8
 
 function send(ws, data) {
   if (ws.readyState === 1 /* OPEN */) {
@@ -61,6 +91,21 @@ function originAllowed(origin, allowedOrigins) {
   return allowedOrigins.includes(origin)
 }
 
+/** A short, printable form of something a client sent, for echoing back. */
+function brief(v) {
+  return typeof v === 'string' ? JSON.stringify(v.slice(0, 64)) : typeof v
+}
+
+/** Normalise PUBLIC_ORIGIN to a ws:// or wss:// origin, or throw. */
+function parsePublicOrigin(raw) {
+  let u
+  try { u = new URL(String(raw)) } catch { u = null }
+  if (!u || (u.protocol !== 'ws:' && u.protocol !== 'wss:') || u.username || u.password) {
+    throw new Error('PUBLIC_ORIGIN must be this server\'s ws:// or wss:// origin, for example wss://signal.example.org')
+  }
+  return u.origin
+}
+
 // ─── Signaling message types that get forwarded ──────────────────────
 
 const FORWARDABLE = new Set(['offer', 'answer', 'ice-candidate', 'signal'])
@@ -75,42 +120,50 @@ const FORWARDABLE = new Set(['offer', 'answer', 'ice-candidate', 'signal'])
  * @param {string} [opts.origins]    — comma-separated allowed origins
  * @param {string} [opts.authMode]   — 'open' | 'authenticated'
  * @param {object} [opts.env]        — environment overrides
- * @returns {{ server: http.Server, wss: WebSocketServer, peers: Map, listen: (port?: number) => Promise<number> }}
+ * @param {() => number} [opts.now]  — clock (ms), for tests
+ * @returns {{ server: http.Server, wss: WebSocketServer, peerCount: number, listPeers: () => string[], listen: (port?: number) => Promise<number>, close: () => Promise<void> }}
  */
 export function createServer(opts = {}) {
   const env = opts.env ?? process.env
+  const now = opts.now ?? Date.now
   const port = opts.port ?? (Number(env.PORT) || 8787)
   const allowedOrigins = parseOrigins(opts.origins ?? env.ORIGINS)
   const authMode = opts.authMode ?? env.AUTH_MODE ?? 'open'
+  if (authMode !== 'open' && authMode !== 'authenticated') {
+    throw new Error(`AUTH_MODE must be "open" or "authenticated" (got ${brief(authMode)})`)
+  }
+  const authenticated = authMode === 'authenticated'
+  const publicOrigin = authenticated ? parsePublicOrigin(opts.publicOrigin ?? env.PUBLIC_ORIGIN) : null
+  const nonceTtlMs = Number(env.AUTH_NONCE_TTL_MS) > 0 ? Number(env.AUTH_NONCE_TTL_MS) : 30_000
+  const peerDiscovery = env.PEER_DISCOVERY ?? 'all'
+  if (peerDiscovery !== 'all' && peerDiscovery !== 'none') {
+    throw new Error(`PEER_DISCOVERY must be "all" or "none" (got ${brief(peerDiscovery)})`)
+  }
+  const announcePeers = peerDiscovery === 'all'
   assertIceConfig(env) // fail at startup on an unusable TURN_SECRET
   const trustProxy = envFlag(env.TRUST_PROXY)
   const iceRateLimiter = new RateLimiter({
     limit: Number(env.ICE_RATE_LIMIT_PER_MINUTE) || 30,
     windowMs: 60_000,
+    now,
   })
   const maxConnections = opts.maxConnections ?? (Number(env.MAX_CONNECTIONS) || 1024)
+  const maxConnectionsPerIp = opts.maxConnectionsPerIp ?? (Number(env.MAX_CONNECTIONS_PER_IP) || 100)
+  const connectRateLimiter = new RateLimiter({
+    limit: opts.maxConnectsPerMinutePerIp ?? (Number(env.MAX_CONNECTS_PER_MINUTE_PER_IP) || 120),
+    windowMs: 60_000,
+    now,
+  })
   const maxMessagesPerMinute = opts.maxMessagesPerMinute ?? (Number(env.MAX_MESSAGES_PER_MINUTE) || 300)
+  const maxBufferedBytes = opts.maxBufferedBytes ?? (Number(env.MAX_BUFFERED_BYTES) || 1024 * 1024)
+  const idleTimeoutMs = opts.idleTimeoutMs ?? (Number(env.IDLE_TIMEOUT_MS) || 0)
   const iceApiToken = env.ICE_API_TOKEN ?? null
 
   /** @type {Map<string, import('ws').WebSocket>} podId → ws */
   const peers = new Map()
 
-  /** @type {Map<import('ws').WebSocket, string>} ws → podId (reverse lookup) */
-  const wsBySocket = new Map()
-
-  /** @type {Map<string, { count: number, resetAt: number }>} */
-  const rateLimits = new Map()
-
-  function checkRateLimit(podId) {
-    const now = Date.now()
-    let entry = rateLimits.get(podId)
-    if (!entry || now >= entry.resetAt) {
-      entry = { count: 0, resetAt: now + 60_000 }
-      rateLimits.set(podId, entry)
-    }
-    entry.count++
-    return entry.count <= maxMessagesPerMinute
-  }
+  /** @type {Map<string, number>} client address → open connections */
+  const connectionsByIp = new Map()
 
   // ── HTTP server ──────────────────────────────────────────────────
 
@@ -206,9 +259,36 @@ export function createServer(opts = {}) {
 
   // ── WebSocket server ─────────────────────────────────────────────
 
-  const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 })
+  // maxPayload is enforced by ws on the frame header, before any of the
+  // message is buffered or parsed.
+  const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_BYTES })
+
+  /**
+   * Send to a peer; a receiver that has fallen too far behind is dropped
+   * rather than letting its queue grow.
+   * @returns {boolean} whether the message was handed to the socket
+   */
+  function sendToPeer(ws, data) {
+    if (ws.readyState !== 1) return false
+    if (ws.bufferedAmount > maxBufferedBytes) {
+      ws.close(4413, 'receiver too slow')
+      setImmediate(() => ws.terminate())
+      return false
+    }
+    ws.send(JSON.stringify(data))
+    return true
+  }
+
+  function broadcast(data, exclude) {
+    if (!announcePeers) return
+    for (const [, ws] of peers) {
+      if (ws !== exclude) sendToPeer(ws, data)
+    }
+  }
 
   wss.on('connection', (ws, req) => {
+    const ip = clientIp(req, trustProxy)
+
     const origin = req.headers.origin
     if (!originAllowed(origin, allowedOrigins)) {
       send(ws, { type: 'error', message: 'origin not allowed' })
@@ -222,6 +302,13 @@ export function createServer(opts = {}) {
       return
     }
 
+    if ((connectionsByIp.get(ip) ?? 0) >= maxConnectionsPerIp || !connectRateLimiter.hit(ip).ok) {
+      send(ws, { type: 'error', message: 'too many connections from this address' })
+      ws.close(4429, 'too many connections from this address')
+      return
+    }
+    connectionsByIp.set(ip, (connectionsByIp.get(ip) ?? 0) + 1)
+
     ws.isAlive = true
     ws.on('pong', () => { ws.isAlive = true })
     const heartbeat = setInterval(() => {
@@ -232,6 +319,8 @@ export function createServer(opts = {}) {
 
     let registered = false
     let podId = null
+    let preRegistrationMessages = 0
+    const messageLimiter = new RateLimiter({ limit: maxMessagesPerMinute, windowMs: 60_000, maxKeys: 1, now })
 
     // Clients must register within 10 seconds
     const registrationTimeout = setTimeout(() => {
@@ -241,6 +330,112 @@ export function createServer(opts = {}) {
       }
     }, 10_000)
 
+    // Registered connections that go silent are closed when IDLE_TIMEOUT_MS is set.
+    let idleTimer = null
+    function touch() {
+      if (!idleTimeoutMs || !registered) return
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => {
+        send(ws, { type: 'error', message: 'idle timeout' })
+        ws.close(4408, 'idle timeout')
+      }, idleTimeoutMs)
+    }
+
+    // Authenticated mode: one challenge per connection, usable once.
+    let challenge = null
+    if (authenticated) {
+      challenge = { nonce: randomBytes(16).toString('base64url'), issuedAt: now(), used: false }
+      send(ws, {
+        type: 'challenge',
+        protocol: PROTOCOL_VERSION,
+        purpose: REGISTER_PURPOSE,
+        origin: publicOrigin,
+        nonce: challenge.nonce,
+        ttlMs: nonceTtlMs,
+      })
+    }
+
+    /** Refuse an authentication attempt and end the connection. */
+    function refuse(code, message, closeCode = 4401, extra = {}) {
+      clearTimeout(registrationTimeout)
+      send(ws, { type: 'error', code, message, ...extra })
+      ws.close(closeCode, code)
+    }
+
+    async function register(msg) {
+      if (typeof msg.podId !== 'string' || !msg.podId) {
+        send(ws, { type: 'error', message: 'first message must be { type: "register", podId: string }' })
+        return
+      }
+
+      if (msg.podId.length > 128) {
+        send(ws, { type: 'error', message: 'podId must be 128 chars or fewer' })
+        ws.close(4400, 'invalid podId')
+        clearTimeout(registrationTimeout)
+        return
+      }
+
+      if (authenticated) {
+        // Old clients: no protocol 2 answer to the challenge.
+        if (msg.protocol !== PROTOCOL_VERSION) {
+          return refuse(
+            'protocol-unsupported',
+            `this server requires protocol ${PROTOCOL_VERSION}: answer the "challenge" message with { type: "register", protocol: ${PROTOCOL_VERSION}, podId, pubKey, nonce, signature }`,
+            4426,
+            { required: PROTOCOL_VERSION },
+          )
+        }
+        // The challenge is spent by the first attempt, right or wrong.
+        if (challenge.used) return refuse('bad-nonce', 'challenge already used')
+        challenge.used = true
+        if (typeof msg.nonce !== 'string' || !safeEqual(msg.nonce, challenge.nonce)) {
+          return refuse('bad-nonce', 'nonce does not match the challenge issued on this connection')
+        }
+        if (now() - challenge.issuedAt > nonceTtlMs) {
+          return refuse('challenge-expired', 'challenge expired; reconnect and try again')
+        }
+        const result = await verifyRegistration({
+          podId: msg.podId,
+          pubKey: msg.pubKey,
+          signature: msg.signature,
+          nonce: challenge.nonce,
+          origin: publicOrigin,
+        })
+        if (!result.ok) return refuse(result.code, result.message)
+        if (ws.readyState !== 1) return // went away while verifying
+      }
+
+      const existing = peers.get(msg.podId)
+      if (existing) {
+        if (!authenticated) {
+          send(ws, { type: 'error', message: 'podId already registered' })
+          ws.close(4409, 'podId already registered')
+          clearTimeout(registrationTimeout)
+          return
+        }
+        // Authenticated: the id is the hash of a key this client just proved
+        // it holds, so it is the same pod reconnecting; it replaces its stale
+        // connection.
+        existing.close(4409, 'replaced by a newer connection')
+      }
+
+      podId = msg.podId
+      registered = true
+      clearTimeout(registrationTimeout)
+      touch()
+
+      peers.set(podId, ws)
+
+      // Confirm registration
+      send(ws, { type: 'registered', podId, mode: authMode, verified: authenticated })
+
+      // Send full peer list to the new peer; notify others of join
+      if (announcePeers) {
+        send(ws, { type: 'peers', peers: [...peers.keys()], verified: authenticated })
+        if (!existing) broadcast({ type: 'peer-joined', podId, verified: authenticated }, ws)
+      }
+    }
+
     ws.on('message', async (raw) => {
       let msg
       try {
@@ -249,78 +444,42 @@ export function createServer(opts = {}) {
         send(ws, { type: 'error', message: 'invalid JSON' })
         return
       }
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+        send(ws, { type: 'error', message: 'messages must be JSON objects' })
+        return
+      }
 
       // ── Registration ─────────────────────────────────────────────
       if (!registered) {
-        if (msg.type !== 'register' || typeof msg.podId !== 'string' || !msg.podId) {
+        if (++preRegistrationMessages > PRE_REGISTRATION_MESSAGE_LIMIT) {
+          ws.close(4429, 'too many messages before registration')
+          return
+        }
+        if (msg.type !== 'register') {
           send(ws, { type: 'error', message: 'first message must be { type: "register", podId: string }' })
           return
         }
-
-        if (msg.podId.length > 128) {
-          send(ws, { type: 'error', message: 'podId must be 128 chars or fewer' })
-          ws.close(4400, 'invalid podId')
-          clearTimeout(registrationTimeout)
-          return
+        try {
+          await register(msg)
+        } catch {
+          // Never let a handler error escape: it would take the process down.
+          send(ws, { type: 'error', message: 'registration failed' })
+          ws.close(1011, 'internal error')
         }
+        return
+      }
 
-        // Auth check — Ed25519 signature verification
-        if (authMode === 'authenticated') {
-          if (!msg.pubKey || !msg.signature) {
-            send(ws, { type: 'error', message: 'authenticated mode requires pubKey and signature' })
-            ws.close(4401, 'missing credentials')
-            clearTimeout(registrationTimeout)
-            return
-          }
-          try {
-            const pubKeyBytes = Uint8Array.from(atob(msg.pubKey), c => c.charCodeAt(0))
-            const sigBytes = Uint8Array.from(atob(msg.signature), c => c.charCodeAt(0))
-            const key = await webcrypto.subtle.importKey('raw', pubKeyBytes, { name: 'Ed25519' }, false, ['verify'])
-            const valid = await webcrypto.subtle.verify('Ed25519', key, sigBytes, new TextEncoder().encode(msg.podId))
-            if (!valid) {
-              send(ws, { type: 'error', message: 'signature verification failed' })
-              ws.close(4401, 'invalid signature')
-              clearTimeout(registrationTimeout)
-              return
-            }
-          } catch (err) {
-            send(ws, { type: 'error', message: 'authentication failed' })
-            ws.close(4401, 'auth error')
-            clearTimeout(registrationTimeout)
-            return
-          }
-        }
+      touch()
 
-        // Reject duplicate podId
-        if (peers.has(msg.podId)) {
-          send(ws, { type: 'error', message: 'podId already registered' })
-          ws.close(4409, 'podId already registered')
-          clearTimeout(registrationTimeout)
-          return
-        }
-
-        podId = msg.podId
-        registered = true
-        clearTimeout(registrationTimeout)
-
-        peers.set(podId, ws)
-        wsBySocket.set(ws, podId)
-
-        // Confirm registration
-        send(ws, { type: 'registered', podId })
-
-        // Send full peer list to the new peer; notify others of join
-        send(ws, { type: 'peers', peers: [...peers.keys()] })
-        broadcast({ type: 'peer-joined', podId }, ws)
+      // Every message counts, not only forwarded ones.
+      const rl = messageLimiter.hit('c')
+      if (!rl.ok) {
+        send(ws, { type: 'error', message: 'rate limit exceeded' })
         return
       }
 
       // ── Forwarding ───────────────────────────────────────────────
       if (FORWARDABLE.has(msg.type)) {
-        if (!checkRateLimit(podId)) {
-          send(ws, { type: 'error', message: 'rate limit exceeded' })
-          return
-        }
         const { target, ...payload } = msg
         if (typeof target !== 'string' || !target) {
           send(ws, { type: 'error', message: 'forwarded messages require a "target" field' })
@@ -329,34 +488,43 @@ export function createServer(opts = {}) {
 
         const targetWs = peers.get(target)
         if (!targetWs) {
-          send(ws, { type: 'error', message: `peer "${target}" not found` })
+          send(ws, { type: 'error', message: 'peer not found', target: target.slice(0, 128) })
           return
         }
 
-        // Forward with source identification
-        send(targetWs, { ...payload, source: podId })
+        // Forward with source identification. The server decides who the
+        // sender is and whether that was verified: whatever the sender put in
+        // these fields is overwritten.
+        const forwarded = { ...payload, source: podId, sourceVerified: authenticated }
+        if (Object.hasOwn(payload, 'from')) forwarded.from = podId
+        if (!sendToPeer(targetWs, forwarded)) {
+          send(ws, { type: 'error', message: 'peer is not accepting messages', target: target.slice(0, 128) })
+        }
         return
       }
 
       // ── Ping / keep-alive ────────────────────────────────────────
       if (msg.type === 'ping') {
-        send(ws, { type: 'pong', timestamp: Date.now() })
+        send(ws, { type: 'pong', timestamp: now() })
         return
       }
 
-      send(ws, { type: 'error', message: `unknown message type: ${msg.type}` })
+      send(ws, { type: 'error', message: `unknown message type: ${brief(msg.type)}` })
     })
 
     ws.on('close', () => {
       clearInterval(heartbeat)
       clearTimeout(registrationTimeout)
-      if (podId) {
+      clearTimeout(idleTimer)
+      const n = (connectionsByIp.get(ip) ?? 1) - 1
+      if (n > 0) connectionsByIp.set(ip, n)
+      else connectionsByIp.delete(ip)
+      // Only the connection that currently holds the id releases it.
+      if (podId && peers.get(podId) === ws) {
         peers.delete(podId)
-        wsBySocket.delete(ws)
 
         // Notify remaining peers
         broadcast({ type: 'peer-left', podId })
-        rateLimits.delete(podId)
       }
     })
 
@@ -364,16 +532,6 @@ export function createServer(opts = {}) {
       // Let 'close' handle cleanup
     })
   })
-
-  // ── Broadcasting helpers ─────────────────────────────────────────
-
-  function broadcast(data, exclude) {
-    for (const [, ws] of peers) {
-      if (ws !== exclude) send(ws, data)
-    }
-  }
-
-  // broadcastPeerList() removed — replaced by incremental peer-joined/peer-left events
 
   // ── Public API ───────────────────────────────────────────────────
 
@@ -408,7 +566,6 @@ export function createServer(opts = {}) {
         ws.terminate()
       }
       peers.clear()
-      wsBySocket.clear()
 
       wss.close(() => {
         server.close(() => resolve())
@@ -428,6 +585,12 @@ if (isMain) {
   const port = await instance.listen()
   console.log(`[signaling] listening on port ${port}`)
   console.log(`[signaling] auth mode: ${process.env.AUTH_MODE ?? 'open'}`)
+  if ((process.env.AUTH_MODE ?? 'open') === 'open') {
+    console.log('[signaling] open mode: pod ids are not verified and peers are stamped unverified')
+  }
+  if (!process.env.ORIGINS) {
+    console.log('[signaling] ORIGINS is not set: WebSocket connections are accepted from any origin')
+  }
   console.log(`[signaling] health check: http://localhost:${port}/health`)
 
   const shutdown = async () => {

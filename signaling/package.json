@@ -6,12 +6,13 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "test": "node --test signaling.test.mjs ice.test.mjs"
+    "test": "node --test signaling.test.mjs ice.test.mjs auth.test.mjs hardening.test.mjs"
   },
   "dependencies": {
     "ws": "^8.16.0"
   },
   "devDependencies": {
-    "@johnhenry/browsermesh-core": "^0.2.2"
+    "@johnhenry/browsermesh-core": "^0.2.2",
+    "@johnhenry/browsermesh-primitives": "^0.3.1"
   }
 }
