@@ -91,7 +91,7 @@ describe('ServerPod', () => {
     pod = new ServerPod({ onLog: () => {}, dataDir: mkdtempSync(join(tmpdir(), 'sp-')) })
     await pod.start()
 
-    pod.registerService('custom', { ping: () => ({ pong: true }) })
+    pod.registerService('custom', { ping: () => ({ pong: true }) }, { remote: true })
     assert.ok(pod.listServices().includes('custom'))
 
     const result = await pod.callService('custom', 'ping', {}, pod.serviceToken)
