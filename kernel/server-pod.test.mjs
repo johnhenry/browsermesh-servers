@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
 import { ServerPod } from './server-pod.mjs'
-import { EventEmitterTransport } from 'browsermesh-pod'
+import { EventEmitterTransport } from '@johnhenry/browsermesh-pod'
 
 describe('ServerPod', () => {
   let pod
@@ -40,7 +40,7 @@ describe('ServerPod', () => {
   })
 
   it('accepts a pre-existing PodIdentity', async () => {
-    const { PodIdentity } = await import('browsermesh-primitives')
+    const { PodIdentity } = await import('@johnhenry/browsermesh-primitives')
     const identity = await PodIdentity.generate()
 
     pod = new ServerPod({ onLog: () => {}, dataDir: mkdtempSync(join(tmpdir(), 'sp-')) })
@@ -91,7 +91,7 @@ describe('ServerPod', () => {
     pod = new ServerPod({ onLog: () => {}, dataDir: mkdtempSync(join(tmpdir(), 'sp-')) })
     await pod.start()
 
-    pod.registerService('custom', { ping: () => ({ pong: true }) })
+    pod.registerService('custom', { ping: () => ({ pong: true }) }, { remote: true })
     assert.ok(pod.listServices().includes('custom'))
 
     const result = await pod.callService('custom', 'ping', {}, pod.serviceToken)
@@ -125,8 +125,8 @@ describe('ServerPod', () => {
     const pod2 = new ServerPod({ onLog: () => {}, dataDir: dir2 })
 
     // Use TransportDiscovery so they can find each other
-    const { TransportDiscovery } = await import('browsermesh-pod')
-    const { PodIdentity } = await import('browsermesh-primitives')
+    const { TransportDiscovery } = await import('@johnhenry/browsermesh-pod')
+    const { PodIdentity } = await import('@johnhenry/browsermesh-primitives')
 
     const id1 = await PodIdentity.generate()
     const id2 = await PodIdentity.generate()

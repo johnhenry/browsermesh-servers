@@ -6,9 +6,14 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "test": "node --test relay.test.mjs"
+    "test": "node --test"
   },
   "dependencies": {
+    "@johnhenry/wsh": "^0.45.0",
     "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@johnhenry/browsermesh-primitives": "^0.4.0",
+    "@johnhenry/browsermesh-transport": "^0.6.0"
   }
 }

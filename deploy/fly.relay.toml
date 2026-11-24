@@ -6,6 +6,9 @@ primary_region = "iad"
 
 [env]
   PORT = "8788"
+  # Fly's proxy sets Fly-Client-IP; without this every client shares the
+  # proxy's address and the per-address limits would apply to all of them.
+  TRUST_PROXY = "1"
 
 [http_service]
   internal_port = 8788

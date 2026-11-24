@@ -6,11 +6,11 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "test": "node --test kernel.test.mjs"
+    "test": "node --test"
   },
   "dependencies": {
-    "browsermesh-pod": "^0.2.0",
-    "browsermesh-primitives": "^0.1.1",
+    "@johnhenry/browsermesh-pod": "^0.2.0",
+    "@johnhenry/browsermesh-primitives": "^0.4.0",
     "multicast-dns": "^7.2.5",
     "ws": "^8.16.0"
   }

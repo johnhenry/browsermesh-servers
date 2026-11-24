@@ -8,12 +8,13 @@
  * model as browser pods. Node.js 24+ has full crypto.subtle Ed25519 support.
  */
 
-import { Pod, EventEmitterTransport, NullDiscovery } from 'browsermesh-pod'
-import { PodIdentity } from 'browsermesh-primitives'
+import { Pod, EventEmitterTransport, NullDiscovery } from '@johnhenry/browsermesh-pod'
+import { PodIdentity } from '@johnhenry/browsermesh-primitives'
 import { hostname } from 'node:os'
 import { webcrypto } from 'node:crypto'
 import { ServerFileSystem } from './index.mjs'
 import { ServerAgent } from './index.mjs'
+import { ServiceRegistry, safeEqual } from './services.mjs'
 
 /**
  * Server-side Pod — always-on mesh peer running in Node.js.
@@ -27,11 +28,12 @@ import { ServerAgent } from './index.mjs'
 export class ServerPod extends Pod {
   #fileSystem
   #agent
-  #services = new Map()
+  #services
   #serviceToken
   #label
   #mdns = null
   #mdnsPort = null
+  #mdnsLegacy = true
   #onLog
 
   /**
@@ -45,10 +47,13 @@ export class ServerPod extends Pod {
    * @param {string} [opts.llmApiKey]         — API key for the LLM provider
    * @param {string} [opts.llmModel]          — model name override
    * @param {number} [opts.mdnsPort]          — port to advertise via mDNS (enables LAN discovery)
+   * @param {boolean} [opts.mdnsLegacy]       — false: do not use the legacy `_clawser` mDNS service name
+   * @param {string[]} [opts.remoteServices]  — services remote callers may reach (default: fs, agent)
    * @param {(msg: string) => void} [opts.onLog]
    */
   constructor(opts = {}) {
     super()
+    this.#services = new ServiceRegistry(opts.remoteServices ? { remote: opts.remoteServices } : undefined)
     this.#fileSystem = new ServerFileSystem(opts.dataDir ?? './data')
     this.#agent = new ServerAgent({
       name: opts.agentName ?? 'server-agent',
@@ -60,6 +65,7 @@ export class ServerPod extends Pod {
     this.#label = opts.label ?? hostname()
     this.#serviceToken = opts.serviceToken ?? webcrypto.randomUUID()
     this.#mdnsPort = opts.mdnsPort ?? null
+    this.#mdnsLegacy = opts.mdnsLegacy !== false
     this.#onLog = opts.onLog ?? console.log
 
     // Register built-in services
@@ -118,6 +124,7 @@ export class ServerPod extends Pod {
         this.#mdns = new MdnsDiscovery({
           podId: this.podId,
           port: this.#mdnsPort,
+          legacy: this.#mdnsLegacy,
           label: this.#label,
           onLog: this.#onLog,
         })
@@ -159,12 +166,17 @@ export class ServerPod extends Pod {
   get mdns() { return this.#mdns }
 
   /**
-   * Register a named service.
+   * Register a named service. Remote callers reach only the declared methods
+   * (own function properties, or `opts.methods`) of services on the remote
+   * allow-list (`fs` and `agent` by default; `{ remote: true }` adds one).
    * @param {string} name
    * @param {object} handler — map of method names to async functions
+   * @param {object} [opts]
+   * @param {string[]} [opts.methods]
+   * @param {boolean} [opts.remote]
    */
-  registerService(name, handler) {
-    this.#services.set(name, handler)
+  registerService(name, handler, opts) {
+    this.#services.register(name, handler, opts)
   }
 
   /**
@@ -172,16 +184,16 @@ export class ServerPod extends Pod {
    * @returns {string[]}
    */
   listServices() {
-    return Array.from(this.#services.keys())
+    return this.#services.list()
   }
 
   /**
-   * Get a registered service.
+   * Get a registered service (trusted, in-process use).
    * @param {string} name
    * @returns {object|undefined}
    */
   getService(name) {
-    return this.#services.get(name)
+    return this.#services.handler(name)
   }
 
   /**
@@ -190,11 +202,12 @@ export class ServerPod extends Pod {
    * @returns {boolean}
    */
   unregisterService(name) {
-    return this.#services.delete(name)
+    return this.#services.unregister(name)
   }
 
   /**
-   * Authenticated service call for remote peers.
+   * Authenticated service call for remote peers. Only declared methods of
+   * services on the remote allow-list can be reached (see services.mjs).
    * @param {string} name
    * @param {string} method
    * @param {object} args
@@ -202,14 +215,10 @@ export class ServerPod extends Pod {
    * @returns {Promise<object>}
    */
   async callService(name, method, args, token) {
-    if (token !== this.#serviceToken) {
+    if (!safeEqual(token, this.#serviceToken)) {
       return { success: false, error: 'unauthorized' }
     }
-    const svc = this.#services.get(name)
-    if (!svc || !svc[method]) {
-      return { success: false, error: `unknown service method: ${name}.${method}` }
-    }
-    return svc[method](args)
+    return this.#services.call(name, method, args)
   }
 
   /** @returns {object} */
