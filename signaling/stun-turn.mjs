@@ -82,15 +82,43 @@ export function assertIceConfig(env = process.env) {
 }
 
 /**
+ * Whether answers will carry time-limited TURN credentials: a TURN_SECRET and
+ * at least one TURN_URLS entry. (The legacy static login and an ICE_SERVERS
+ * list are the operator's own fixed values, not minted here.)
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {boolean}
+ */
+export function turnCredentialsConfigured(env = process.env) {
+  return Boolean(env.TURN_SECRET) && splitUrls(env.TURN_URLS ?? '').length > 0
+}
+
+/** True for an entry that points only at STUN servers and carries no login. */
+function isStunOnly(server) {
+  if (!server || typeof server !== 'object') return false
+  if (server.username !== undefined || server.credential !== undefined) return false
+  const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
+  return urls.length > 0 && urls.every(u => typeof u === 'string' && /^stuns?:/i.test(u.trim()))
+}
+
+/**
  * Return an array of RTCIceServer-compatible objects, with TURN credentials
  * minted for `now`. Call it per request: every answer carries fresh
  * credentials.
  *
  * @param {Record<string, string | undefined>} env
  * @param {number} [now] — ms since epoch
+ * @param {object} [opts]
+ * @param {boolean} [opts.stunOnly] — leave out every entry that is not plain
+ *   STUN (anything with a login or a turn:/turns: URL), whatever configured it
  * @returns {Array<{ urls: string | string[], username?: string, credential?: string }>}
  */
-export function getIceServers(env = process.env, now = Date.now()) {
+export function getIceServers(env = process.env, now = Date.now(), { stunOnly = false } = {}) {
+  const all = buildIceServers(env, now)
+  return stunOnly ? all.filter(isStunOnly) : all
+}
+
+function buildIceServers(env, now) {
   assertIceConfig(env)
 
   // Full override via JSON blob
