@@ -112,10 +112,12 @@ describe('signaling limits', () => {
 
   it('closes a registered connection that stays silent when IDLE_TIMEOUT_MS is set', async () => {
     const port = await start({ idleTimeoutMs: 100 })
+    const serverSideClosed = new Promise(resolve => instance.wss.once('connection', ws => ws.once('close', resolve)))
     const c = await Client.connect(port)
     c.send({ type: 'register', podId: 'pod-a' })
     await c.waitFor(m => m.type === 'registered')
     assert.equal(await c.closed, 4408)
+    await serverSideClosed
     assert.deepEqual(instance.listPeers(), [])
   })
 
