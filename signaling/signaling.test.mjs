@@ -9,7 +9,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from './index.mjs'
-import { getIceServers, DEFAULT_STUN_SERVERS } from './stun-turn.mjs'
 import WebSocket from 'ws'
 import { SignalingClient } from '@johnhenry/browsermesh-core'
 
@@ -50,50 +49,7 @@ async function httpGet(port, path) {
   return { status: res.status, body: await res.json() }
 }
 
-// ─── stun-turn.mjs unit tests ────────────────────────────────────────
-
-describe('stun-turn', () => {
-  it('returns default STUN servers when no env is set', () => {
-    const servers = getIceServers({})
-    assert.deepEqual(servers, DEFAULT_STUN_SERVERS)
-  })
-
-  it('parses ICE_SERVERS from env JSON', () => {
-    const custom = [{ urls: 'stun:custom.example.com:3478' }]
-    const servers = getIceServers({ ICE_SERVERS: JSON.stringify(custom) })
-    assert.deepEqual(servers, custom)
-  })
-
-  it('falls back to defaults on invalid ICE_SERVERS JSON', () => {
-    const servers = getIceServers({ ICE_SERVERS: 'not-json' })
-    assert.deepEqual(servers, DEFAULT_STUN_SERVERS)
-  })
-
-  it('falls back to defaults on empty ICE_SERVERS array', () => {
-    const servers = getIceServers({ ICE_SERVERS: '[]' })
-    assert.deepEqual(servers, DEFAULT_STUN_SERVERS)
-  })
-
-  it('appends TURN server from env vars', () => {
-    const servers = getIceServers({
-      TURN_URLS: 'turn:turn.example.com:3478',
-      TURN_USERNAME: 'user',
-      TURN_CREDENTIAL: 'pass',
-    })
-    assert.equal(servers.length, 3) // 2 STUN + 1 TURN
-    assert.deepEqual(servers[2], {
-      urls: 'turn:turn.example.com:3478',
-      username: 'user',
-      credential: 'pass',
-    })
-  })
-
-  it('appends TURN without credentials if only TURN_URLS is set', () => {
-    const servers = getIceServers({ TURN_URLS: 'turn:turn.example.com:3478' })
-    assert.equal(servers.length, 3)
-    assert.deepEqual(servers[2], { urls: 'turn:turn.example.com:3478' })
-  })
-})
+// stun-turn.mjs and GET /ice-servers are tested in ice.test.mjs
 
 // ─── Signaling server integration tests ──────────────────────────────
 
@@ -118,13 +74,6 @@ describe('signaling server', () => {
       assert.equal(status, 200)
       assert.equal(body.status, 'ok')
       assert.equal(body.peers, 0)
-    })
-
-    it('GET /ice-servers returns ICE configuration', async () => {
-      const { status, body } = await httpGet(port, '/ice-servers')
-      assert.equal(status, 200)
-      assert.ok(Array.isArray(body))
-      assert.ok(body.length >= 2) // at least the default STUN servers
     })
 
     it('GET unknown path returns 404', async () => {
@@ -669,47 +618,6 @@ describe('signaling incremental peer events', () => {
     assert.equal(leaveMsg.podId, 'pod-b')
 
     a.ws.close()
-  })
-})
-
-// ─── ICE server auth ────────────────────────────────────────────────
-
-describe('signaling /ice-servers auth', () => {
-  it('is open when no ICE_API_TOKEN is set', async () => {
-    const instance = createServer({ port: 0 })
-    const port = await instance.listen(0)
-
-    const res = await fetch(`http://127.0.0.1:${port}/ice-servers`)
-    assert.equal(res.status, 200)
-    const body = await res.json()
-    assert.ok(Array.isArray(body))
-
-    await instance.close()
-  })
-
-  it('requires bearer token when ICE_API_TOKEN is set', async () => {
-    const instance = createServer({ port: 0, env: { ICE_API_TOKEN: 'secret-token' } })
-    const port = await instance.listen(0)
-
-    // No token → 401
-    const res1 = await fetch(`http://127.0.0.1:${port}/ice-servers`)
-    assert.equal(res1.status, 401)
-
-    // Wrong token → 401
-    const res2 = await fetch(`http://127.0.0.1:${port}/ice-servers`, {
-      headers: { Authorization: 'Bearer wrong' },
-    })
-    assert.equal(res2.status, 401)
-
-    // Correct token → 200
-    const res3 = await fetch(`http://127.0.0.1:${port}/ice-servers`, {
-      headers: { Authorization: 'Bearer secret-token' },
-    })
-    assert.equal(res3.status, 200)
-    const body = await res3.json()
-    assert.ok(Array.isArray(body))
-
-    await instance.close()
   })
 })
 
