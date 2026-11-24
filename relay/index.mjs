@@ -40,6 +40,14 @@ import http from 'node:http'
 import { WebSocketServer } from 'ws'
 import { fileURLToPath } from 'node:url'
 import { RateLimiter, clientIp, envFlag } from './limits.mjs'
+import { PipeRoute, resolvePipeConfig } from './pipe.mjs'
+
+// Anything that looks like `.../r/<something>` belongs to the pipe route (or to
+// nobody when it is off): it never falls through to the JSON relay.
+const PIPE_PATH_RE = /\/r\/[^/]*$/
+function safePathname(req) {
+  try { return new URL(req.url, 'http://localhost').pathname } catch { return '' }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -224,6 +232,10 @@ function createRelayServer(opts = {}) {
   const startedAt = Date.now()
   const relay = new RelayServer({ maxMessagesPerMinute, maxBufferedBytes, onLog })
 
+  // wsh pipe relay route: null unless enabled (PIPE_RELAY=1)
+  const pipeConfig = resolvePipeConfig(env, opts.pipe, allowedOrigins)
+  const pipe = pipeConfig ? new PipeRoute(pipeConfig, { trustProxy }) : null
+
   // ── HTTP server ──────────────────────────────────────────────────
 
   /** CORS: the request's Origin is reflected only when exactly listed; never a wildcard. */
@@ -282,7 +294,21 @@ function createRelayServer(opts = {}) {
 
   // maxPayload is enforced by ws on the frame header, before any of the
   // message is buffered or parsed.
-  const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_BYTES })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES })
+
+  // Upgrades are routed by hand: `<base>/r/<id>` belongs to the wsh pipe relay
+  // (when enabled), everything else to the JSON relay below.
+  server.on('upgrade', (req, socket, head) => {
+    socket.on('error', () => {})
+    const isPipePath = pipe ? pipe.matches(req) : PIPE_PATH_RE.test(safePathname(req))
+    if (isPipePath) {
+      if (pipe) return pipe.handleUpgrade(req, socket, head)
+      // Not enabled: the route does not exist.
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+      return socket.destroy()
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+  })
 
   wss.on('connection', (ws, req) => {
     const ip = clientIp(req, trustProxy)
@@ -447,7 +473,7 @@ function createRelayServer(opts = {}) {
    */
   function listen(listenPort) {
     const p = listenPort ?? port
-    return new Promise((resolve, reject) => {
+    return (pipe ? pipe.start() : Promise.resolve()).then(() => new Promise((resolve, reject) => {
       const onError = (err) => reject(err)
       server.once('error', onError)
       server.listen(p, () => {
@@ -455,7 +481,7 @@ function createRelayServer(opts = {}) {
         const addr = server.address()
         resolve(typeof addr === 'object' ? addr.port : p)
       })
-    })
+    }))
   }
 
   /**
@@ -463,7 +489,7 @@ function createRelayServer(opts = {}) {
    * @returns {Promise<void>}
    */
   function close() {
-    return new Promise((resolve) => {
+    return Promise.resolve(pipe?.close()).then(() => new Promise((resolve) => {
       // Terminate all clients (registered + unregistered)
       for (const ws of wss.clients) {
         ws.terminate()
@@ -472,10 +498,10 @@ function createRelayServer(opts = {}) {
       wss.close(() => {
         server.close(() => resolve())
       })
-    })
+    }))
   }
 
-  return { server, wss, relay, listen, close }
+  return { server, wss, relay, pipe, listen, close }
 }
 
 // ─── Direct execution ────────────────────────────────────────────────
