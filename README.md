@@ -53,8 +53,20 @@ sender's registered id), `sourceVerified` and, if the sender included `from`, a
   client knows it and must match the server's `PUBLIC_ORIGIN`. Peers are stamped
   `verified: true`. A client that does not speak protocol 2 is refused with
   `code: 'protocol-unsupported'`; an id is released only by the connection that
-  holds it, and the same key reconnecting takes over its stale connection. An
-  unknown `AUTH_MODE` is an error, not open mode.
+  holds it. The same key may hold up to `MAX_CONNECTIONS_PER_POD` (default 2)
+  connections at once, so a pod that connects twice to this server (a primary
+  and a secondary) does not push itself off; messages for the pod go to its
+  newest connection, and `peer-left` is sent when the last one closes. One more
+  connection than that replaces the oldest, which is sent
+  `{ type: 'error', code: 'replaced', reconnect: false, message }` and then
+  closed with code `4409` and reason `replaced`: a client must not reconnect
+  automatically after that (a newer connection of the same pod exists), or two
+  clients over the limit would replace each other in a loop. `1` gives the
+  single-connection behaviour (a new connection replaces the old one). Open
+  mode is unchanged: a second connection for an id is refused with `4409` /
+  `podId already registered` and the first stays. Every connection counts
+  against the per-address and global limits and has its own message rate limit.
+  An unknown `AUTH_MODE` is an error, not open mode.
 
 `PEER_DISCOVERY=none` stops the peer list and join/leave events (default `all`).
 The published `SignalingClient` does not speak protocol 2 yet.
@@ -94,6 +106,7 @@ The published `SignalingClient` does not speak protocol 2 yet.
 | `MAX_CONNECTIONS` | 1024 | concurrent WebSocket connections |
 | `MAX_CONNECTIONS_PER_IP` | 100 | concurrent connections per client address |
 | `MAX_CONNECTS_PER_MINUTE_PER_IP` | 120 | new connections per client address per minute |
+| `MAX_CONNECTIONS_PER_POD` | 2 | authenticated mode: connections one verified pod id may hold at once (whole number, 1 to 16); the next replaces the oldest with `code: 'replaced'`, close `4409`. No effect in open mode |
 | `MAX_MESSAGES_PER_MINUTE` | 300 | messages per connection per minute (every message counts) |
 | `MAX_BUFFERED_BYTES` | 1048576 | a receiver with more unsent than this is dropped |
 | `IDLE_TIMEOUT_MS` | 0 (off) | close a registered connection silent for this long |

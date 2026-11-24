@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Signalling (authenticated mode): one verified pod id may hold up to `MAX_CONNECTIONS_PER_POD` (default 2) connections, so a pod with a primary and a secondary connection to the same server no longer replaces itself in a loop; a connection pushed out by a newer one is sent `code: 'replaced'`, `reconnect: false` and closed `4409`. Open mode is unchanged
+
 - Signalling: no third-party STUN by default; time-limited TURN credentials (`TURN_SECRET`); `/ice-servers` answered only to the bearer token or the same origin, rate limited; exact-origin CORS
 - Signalling: authenticated mode is a challenge/response protocol (protocol 2) that binds the pod id to the proven key; open mode stamps peers `verified: false`; per-address limits, backpressure, idle timeout
 - Relay: origin allow-list, per-address limits, backpressure, idle timeout; envelopes stamped `sourceVerified: false`; optional wsh pipe-relay route (`PIPE_RELAY=1`)
