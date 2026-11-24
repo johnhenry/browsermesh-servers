@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Relay: `@johnhenry/wsh` pinned to exactly 0.50.0 (was `^0.45.0`, which admits 0.45 only); tested against 0.45.0, 0.46.1, 0.48.0 and 0.50.0. Relay test dependencies updated to browsermesh-transport 0.9 / primitives 0.6.1 (their peer range admits newer wsh). `relay/package-lock.json` now lists the dependency tree. The pipe route is still off unless `PIPE_RELAY=1`
+
 - Signalling (authenticated mode): one verified pod id may hold up to `MAX_CONNECTIONS_PER_POD` (default 2) connections, so a pod with a primary and a secondary connection to the same server no longer replaces itself in a loop; a connection pushed out by a newer one is sent `code: 'replaced'`, `reconnect: false` and closed `4409`. Open mode is unchanged
 - Signalling: `/ice-servers` gives TURN credentials only to the bearer token; a same-origin claim gets the STUN part only (new `ICE_ALLOW_SAME_ORIGIN_TURN=1` opts back in); with `TURN_SECRET` and `TURN_URLS` set the server requires `ICE_API_TOKEN` to start. No change without TURN credentials configured
 

@@ -9,11 +9,11 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@johnhenry/wsh": "^0.45.0",
+    "@johnhenry/wsh": "0.50.0",
     "ws": "^8.16.0"
   },
   "devDependencies": {
-    "@johnhenry/browsermesh-primitives": "^0.4.0",
-    "@johnhenry/browsermesh-transport": "^0.6.0"
+    "@johnhenry/browsermesh-primitives": "^0.6.1",
+    "@johnhenry/browsermesh-transport": "^0.9.0"
   }
 }
