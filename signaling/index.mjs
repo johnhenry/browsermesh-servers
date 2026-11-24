@@ -30,7 +30,7 @@
  *        { type: 'offer'|'answer'|'ice-candidate'|'signal', target: '<podId>', ...payload }
  *   6. Server forwards to target with `source`, `from` and `sourceVerified`
  *      set by the server (whatever the sender put there is overwritten)
- *   7. On disconnect, server tells the others { type: 'peer-left', podId }
+ *   7. When a pod's last connection closes, server tells the others { type: 'peer-left', podId }
  *
  * HTTP endpoints:
  *   GET /health      → { status: 'ok', peers: N }
@@ -56,6 +56,10 @@
  *   ICE_SERVERS, STUN_URLS, ALLOW_PUBLIC_STUN, TURN_URLS, TURN_SECRET,
  *   TURN_TTL_SECONDS — see stun-turn.mjs
  *   MAX_CONNECTIONS       — max concurrent WebSocket connections (default 1024)
+ *   MAX_CONNECTIONS_PER_POD — authenticated mode: connections one verified pod id may hold (1-16,
+ *                           default 2); one more replaces the oldest, which is sent
+ *                           { type: 'error', code: 'replaced', reconnect: false } and closed 4409
+ *                           'replaced' (open mode: a second connection for an id is refused)
  *   MAX_CONNECTIONS_PER_IP — max concurrent connections per client address (default 100)
  *   MAX_CONNECTS_PER_MINUTE_PER_IP — new connections per client address per minute (default 120)
  *   MAX_MESSAGES_PER_MINUTE — per-connection message limit (default 300)
@@ -81,6 +85,12 @@ import { PROTOCOL_VERSION, REGISTER_PURPOSE, verifyRegistration } from './auth.m
 
 const MAX_MESSAGE_BYTES = 64 * 1024
 const PRE_REGISTRATION_MESSAGE_LIMIT = 8
+const DEFAULT_CONNECTIONS_PER_POD = 2
+const MAX_CONNECTIONS_PER_POD_LIMIT = 16
+
+/** Close code and `code` of the error sent to a connection pushed out by a newer one of the same pod. */
+const REPLACED_CLOSE_CODE = 4409
+const REPLACED_CODE = 'replaced'
 
 function send(ws, data) {
   if (ws.readyState === 1 /* OPEN */) {
@@ -102,6 +112,16 @@ function originAllowed(origin, allowedOrigins) {
 /** A short, printable form of something a client sent, for echoing back. */
 function brief(v) {
   return typeof v === 'string' ? JSON.stringify(v.slice(0, 64)) : typeof v
+}
+
+/** MAX_CONNECTIONS_PER_POD: a whole number from 1 to 16 (default 2), or throw. */
+function parseMaxConnectionsPerPod(raw) {
+  if (raw === undefined) return DEFAULT_CONNECTIONS_PER_POD
+  const n = Number(raw)
+  if (String(raw).trim() === '' || !Number.isInteger(n) || n < 1 || n > MAX_CONNECTIONS_PER_POD_LIMIT) {
+    throw new Error(`MAX_CONNECTIONS_PER_POD must be a whole number from 1 to ${MAX_CONNECTIONS_PER_POD_LIMIT} (got ${brief(raw)})`)
+  }
+  return n
 }
 
 /** Normalise PUBLIC_ORIGIN to a ws:// or wss:// origin, or throw. */
@@ -166,6 +186,7 @@ export function createServer(opts = {}) {
   const maxBufferedBytes = opts.maxBufferedBytes ?? (Number(env.MAX_BUFFERED_BYTES) || 1024 * 1024)
   const idleTimeoutMs = opts.idleTimeoutMs ?? (Number(env.IDLE_TIMEOUT_MS) || 0)
   const iceApiToken = env.ICE_API_TOKEN ?? null
+  const maxConnectionsPerPod = parseMaxConnectionsPerPod(env.MAX_CONNECTIONS_PER_POD)
   const iceSameOriginTurn = envFlag(env.ICE_ALLOW_SAME_ORIGIN_TURN)
   const turnConfigured = turnCredentialsConfigured(env)
   // Time-limited TURN credentials are only handed to a caller that holds the
@@ -178,7 +199,12 @@ export function createServer(opts = {}) {
     )
   }
 
-  /** @type {Map<string, import('ws').WebSocket>} podId → ws */
+  /**
+   * podId → its connections, oldest first. Open mode never holds more than one
+   * per id; authenticated mode up to `maxConnectionsPerPod`. Messages for the
+   * pod go to the newest.
+   * @type {Map<string, import('ws').WebSocket[]>}
+   */
   const peers = new Map()
 
   /** @type {Map<string, number>} client address → open connections */
@@ -314,7 +340,8 @@ export function createServer(opts = {}) {
 
   function broadcast(data, exclude) {
     if (!announcePeers) return
-    for (const [, ws] of peers) {
+    for (const [, conns] of peers) {
+      const ws = conns[conns.length - 1]
       if (ws !== exclude) sendToPeer(ws, data)
     }
   }
@@ -447,9 +474,20 @@ export function createServer(opts = {}) {
           return
         }
         // Authenticated: the id is the hash of a key this client just proved
-        // it holds, so it is the same pod reconnecting; it replaces its stale
-        // connection.
-        existing.close(4409, 'replaced by a newer connection')
+        // it holds, so this is the same pod: either reconnecting (its stale
+        // connection is still listed) or holding a second connection on
+        // purpose. Up to MAX_CONNECTIONS_PER_POD are kept; past that the
+        // oldest is replaced, and told so in a way a client can act on.
+        while (existing.length >= maxConnectionsPerPod) {
+          const old = existing.shift()
+          send(old, {
+            type: 'error',
+            code: REPLACED_CODE,
+            reconnect: false,
+            message: 'replaced by a newer connection of the same pod; do not reconnect automatically',
+          })
+          old.close(REPLACED_CLOSE_CODE, REPLACED_CODE)
+        }
       }
 
       podId = msg.podId
@@ -457,7 +495,8 @@ export function createServer(opts = {}) {
       clearTimeout(registrationTimeout)
       touch()
 
-      peers.set(podId, ws)
+      if (existing) existing.push(ws)
+      else peers.set(podId, [ws])
 
       // Confirm registration
       send(ws, { type: 'registered', podId, mode: authMode, verified: authenticated })
@@ -519,7 +558,8 @@ export function createServer(opts = {}) {
           return
         }
 
-        const targetWs = peers.get(target)
+        const targetConns = peers.get(target)
+        const targetWs = targetConns?.[targetConns.length - 1]
         if (!targetWs) {
           send(ws, { type: 'error', message: 'peer not found', target: target.slice(0, 128) })
           return
@@ -552,12 +592,18 @@ export function createServer(opts = {}) {
       const n = (connectionsByIp.get(ip) ?? 1) - 1
       if (n > 0) connectionsByIp.set(ip, n)
       else connectionsByIp.delete(ip)
-      // Only the connection that currently holds the id releases it.
-      if (podId && peers.get(podId) === ws) {
-        peers.delete(podId)
+      // A connection that was replaced is already gone from the list. The pod
+      // is released when its last connection is.
+      const conns = peers.get(podId)
+      const i = conns ? conns.indexOf(ws) : -1
+      if (i >= 0) {
+        conns.splice(i, 1)
+        if (conns.length === 0) {
+          peers.delete(podId)
 
-        // Notify remaining peers
-        broadcast({ type: 'peer-left', podId })
+          // Notify remaining peers
+          broadcast({ type: 'peer-left', podId })
+        }
       }
     })
 

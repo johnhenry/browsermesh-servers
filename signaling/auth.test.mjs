@@ -465,22 +465,188 @@ describe('authenticated mode (protocol 2)', () => {
     a.c.close(); b.c.close()
   })
 
-  it('the same key may reconnect and takes over from its stale connection; nobody else can', async () => {
-    await start()
-    const identity = await PodIdentity.generate()
-    const first = await connectAndChallenge()
-    first.c.send(await registerMessage(identity, first.challenge))
-    await first.c.type('registered')
+  /** Connect, answer the challenge as `identity`, and wait for `registered`. */
+  async function registerPod(identity) {
+    const { c, challenge } = await connectAndChallenge()
+    c.send(await registerMessage(identity, challenge))
+    await c.type('registered')
+    return c
+  }
 
-    const second = await connectAndChallenge()
-    second.c.send(await registerMessage(identity, second.challenge))
-    await second.c.type('registered')
-    assert.equal(await first.c.closed, 4409)
+  /** Everything the server has sent so far has been received once this resolves. */
+  async function settle(...clients) {
+    for (const c of clients) {
+      const from = c.messages.length
+      c.send({ type: 'ping' })
+      await c.waitFor(m => m.type === 'pong', { from })
+    }
+  }
+
+  it('with MAX_CONNECTIONS_PER_POD=1 the same key takes over from its stale connection, and is told why', async () => {
+    await start({ env: { MAX_CONNECTIONS_PER_POD: '1' } })
+    const identity = await PodIdentity.generate()
+    const first = await registerPod(identity)
+    const second = await registerPod(identity)
+    assert.equal(await first.closed, 4409)
+    assert.equal(first.closeReason, 'replaced')
+    const why = first.messages.find(m => m.type === 'error')
+    assert.equal(why.code, 'replaced')
+    assert.equal(why.reconnect, false)
     assert.deepEqual(instance.listPeers(), [identity.podId])
 
     // The old connection closing must not unregister the new one.
+    await settle(second)
     assert.deepEqual(instance.listPeers(), [identity.podId])
-    second.c.close()
+    second.close()
+  })
+
+  it('one pod may hold two connections to the same server: neither is closed, nothing flaps', async () => {
+    await start()
+    const identity = await PodIdentity.generate()
+    const other = await PodIdentity.generate()
+    const watcher = await registerPod(other)
+
+    // Model a client that reconnects whenever it is closed: if anything is
+    // closed it would show up as a close event here.
+    const closes = []
+    const first = await registerPod(identity)
+    const second = await registerPod(identity)
+    for (const c of [first, second]) c.closed.then(code => closes.push(code))
+    await settle(first, second, watcher)
+
+    assert.deepEqual(closes, [])
+    assert.equal(first.messages.some(m => m.type === 'error'), false)
+    assert.equal(second.messages.some(m => m.type === 'error'), false)
+    assert.deepEqual(instance.listPeers().sort(), [identity.podId, other.podId].sort())
+    assert.equal(instance.peerCount, 2)
+    // The second connection of a known pod is not a new peer.
+    assert.equal(watcher.messages.filter(m => m.type === 'peer-joined' && m.podId === identity.podId).length, 1)
+    assert.equal(second.messages.find(m => m.type === 'registered').verified, true)
+    first.close(); second.close(); watcher.close()
+  })
+
+  it('a message for the pod is delivered once, to its newest connection, and falls back when that one goes', async () => {
+    await start()
+    const identity = await PodIdentity.generate()
+    const sender = await registerPod(await PodIdentity.generate())
+    const first = await registerPod(identity)
+    const second = await registerPod(identity)
+
+    sender.send({ type: 'offer', target: identity.podId, sdp: 'one' })
+    await settle(sender, first, second)
+    assert.equal(second.messages.filter(m => m.type === 'offer').length, 1)
+    assert.equal(first.messages.filter(m => m.type === 'offer').length, 0)
+
+    // The newest connection leaves: the pod is still there, via the first.
+    second.close()
+    await second.closed
+    // (The server may not have processed the close yet; an offer sent to the
+    // closing connection is lost, so send again until one reaches the first.)
+    for (let i = 0; i < 100 && !first.messages.some(m => m.type === 'offer'); i++) {
+      sender.send({ type: 'offer', target: identity.podId, sdp: 'two' })
+      await settle(sender, first)
+    }
+    const offer = first.messages.find(m => m.type === 'offer')
+    assert.equal(offer.sdp, 'two')
+    assert.equal(sender.messages.some(m => m.type === 'peer-left'), false)
+    assert.deepEqual(instance.listPeers().includes(identity.podId), true)
+
+    // Only when the last connection goes is the pod announced as gone.
+    first.close()
+    await first.closed
+    await sender.waitFor(m => m.type === 'peer-left' && m.podId === identity.podId)
+    assert.equal(instance.listPeers().includes(identity.podId), false)
+    sender.close()
+  })
+
+  it('a connection beyond the limit replaces the oldest, which is told with a machine-readable reason', async () => {
+    await start({ env: { MAX_CONNECTIONS_PER_POD: '2' } })
+    const identity = await PodIdentity.generate()
+    const watcher = await registerPod(await PodIdentity.generate())
+    const first = await registerPod(identity)
+    const second = await registerPod(identity)
+    const third = await registerPod(identity)
+
+    assert.equal(await first.closed, 4409)
+    assert.equal(first.closeReason, 'replaced')
+    const why = first.messages.find(m => m.type === 'error')
+    assert.equal(why.code, 'replaced')
+    assert.equal(why.reconnect, false)
+    assert.match(why.message, /newer connection/)
+
+    await settle(second, third, watcher)
+    assert.equal(second.ws.readyState, 1)
+    assert.equal(third.ws.readyState, 1)
+    assert.equal(instance.listPeers().includes(identity.podId), true)
+    // The evicted connection closing does not announce the pod as gone.
+    assert.equal(watcher.messages.some(m => m.type === 'peer-left'), false)
+    second.close(); third.close(); watcher.close()
+  })
+
+  it('per-address limits count every connection of a pod', async () => {
+    await start({ server: { maxConnectionsPerIp: 2 } })
+    const identity = await PodIdentity.generate()
+    const first = await registerPod(identity)
+    const second = await registerPod(identity)
+    const third = await Client.connect(port)
+    assert.equal(await third.closed, 4429)
+    assert.ok(third.messages.some(m => m.type === 'error' && /too many connections/.test(m.message)))
+    first.close(); second.close()
+  })
+
+  it('the message rate limit applies to each connection of a pod on its own', async () => {
+    await start({ server: { maxMessagesPerMinute: 3 } })
+    const identity = await PodIdentity.generate()
+    const first = await registerPod(identity)
+    const second = await registerPod(identity)
+    for (const c of [first, second]) {
+      for (let i = 0; i < 3; i++) await settle(c)
+      const from = c.messages.length
+      c.send({ type: 'ping' })
+      const err = await c.waitFor(m => m.type === 'error', { from })
+      assert.match(err.message, /rate limit/)
+    }
+    first.close(); second.close()
+  })
+
+  it('refuses a MAX_CONNECTIONS_PER_POD that is not a whole number from 1 to 16', () => {
+    for (const v of ['0', '-1', '1.5', 'many', '17', '']) {
+      assert.throws(
+        () => createServer({ port: 0, authMode: 'authenticated', env: { PUBLIC_ORIGIN: ORIGIN, MAX_CONNECTIONS_PER_POD: v } }),
+        /MAX_CONNECTIONS_PER_POD/,
+        JSON.stringify(v),
+      )
+    }
+    createServer({ port: 0, authMode: 'authenticated', env: { PUBLIC_ORIGIN: ORIGIN, MAX_CONNECTIONS_PER_POD: '16' } })
+  })
+})
+
+describe('open mode: one connection per pod id, as before', () => {
+  let instance
+  afterEach(async () => { await instance?.close(); instance = null })
+
+  it('refuses a second connection for a pod id and leaves the first alone; the limit setting changes nothing', async () => {
+    for (const env of [{}, { MAX_CONNECTIONS_PER_POD: '8' }]) {
+      instance = createServer({ port: 0, env })
+      const port = await instance.listen(0)
+      const first = await Client.connect(port)
+      first.send({ type: 'register', podId: 'pod-a' })
+      await first.type('registered')
+      const second = await Client.connect(port)
+      second.send({ type: 'register', podId: 'pod-a' })
+      const err = await second.waitFor(m => m.type === 'error')
+      assert.equal(err.message, 'podId already registered')
+      assert.equal(err.code, undefined)
+      assert.equal(await second.closed, 4409)
+      assert.equal(second.closeReason, 'podId already registered')
+
+      first.send({ type: 'ping' })
+      await first.type('pong')
+      assert.equal(first.ws.readyState, 1)
+      assert.deepEqual(instance.listPeers(), ['pod-a'])
+      first.close()
+      await instance.close()
+    }
   })
 })
 
