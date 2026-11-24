@@ -621,73 +621,7 @@ describe('signaling incremental peer events', () => {
   })
 })
 
-// ─── AUTH_MODE=authenticated ────────────────────────────────────────
-
-describe('signaling AUTH_MODE=authenticated', () => {
-  let instance
-  let port
-
-  beforeEach(async () => {
-    instance = createServer({ port: 0, authMode: 'authenticated' })
-    port = await instance.listen(0)
-  })
-
-  afterEach(async () => {
-    await instance.close()
-  })
-
-  it('rejects registration without pubKey and signature', async () => {
-    const { ws, messages } = await connect(port)
-    const closed = new Promise(resolve => ws.on('close', resolve))
-    send(ws, { type: 'register', podId: 'pod-a' })
-    await waitForMessages(messages, 1)
-
-    assert.equal(messages[0].type, 'error')
-    assert.ok(messages[0].message.includes('pubKey'))
-
-    await closed
-  })
-
-  it('rejects registration with invalid signature', async () => {
-    // Import webcrypto for key generation
-    const { webcrypto } = await import('node:crypto')
-    const keyPair = await webcrypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])
-    const pubKeyRaw = new Uint8Array(await webcrypto.subtle.exportKey('raw', keyPair.publicKey))
-    const pubKeyB64 = btoa(String.fromCharCode(...pubKeyRaw))
-    // Sign a different message than podId
-    const wrongSig = new Uint8Array(await webcrypto.subtle.sign('Ed25519', keyPair.privateKey, new TextEncoder().encode('wrong-pod-id')))
-    const sigB64 = btoa(String.fromCharCode(...wrongSig))
-
-    const { ws, messages } = await connect(port)
-    const closed = new Promise(resolve => ws.on('close', resolve))
-    send(ws, { type: 'register', podId: 'pod-a', pubKey: pubKeyB64, signature: sigB64 })
-    await waitForMessages(messages, 1)
-
-    assert.equal(messages[0].type, 'error')
-    assert.ok(messages[0].message.includes('verification failed'))
-
-    await closed
-  })
-
-  it('accepts registration with valid signature', async () => {
-    const { webcrypto } = await import('node:crypto')
-    const keyPair = await webcrypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])
-    const pubKeyRaw = new Uint8Array(await webcrypto.subtle.exportKey('raw', keyPair.publicKey))
-    const pubKeyB64 = btoa(String.fromCharCode(...pubKeyRaw))
-    const podId = 'pod-authenticated'
-    const sig = new Uint8Array(await webcrypto.subtle.sign('Ed25519', keyPair.privateKey, new TextEncoder().encode(podId)))
-    const sigB64 = btoa(String.fromCharCode(...sig))
-
-    const { ws, messages } = await connect(port)
-    send(ws, { type: 'register', podId, pubKey: pubKeyB64, signature: sigB64 })
-    await waitForMessages(messages, 2) // registered + peers
-
-    assert.equal(messages[0].type, 'registered')
-    assert.equal(messages[0].podId, podId)
-
-    ws.close()
-  })
-})
+// AUTH_MODE=authenticated is tested in auth.test.mjs
 
 // ─── AUTH_MODE=open ─────────────────────────────────────────────────
 
