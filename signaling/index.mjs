@@ -34,10 +34,15 @@
  *
  * HTTP endpoints:
  *   GET /health      → { status: 'ok', peers: N }
- *   GET /ice-servers  → ICE server configuration array (time-limited TURN
- *                       credentials). Answered only to a caller that sends
- *                       `Authorization: Bearer <ICE_API_TOKEN>` or that is the
- *                       same origin as this server; rate limited per address.
+ *   GET /ice-servers  → ICE server configuration array. With TURN_SECRET and
+ *                       TURN_URLS set it carries time-limited TURN
+ *                       credentials, and those go only to a caller that sends
+ *                       `Authorization: Bearer <ICE_API_TOKEN>` (a same-origin
+ *                       claim is made of request headers any client can send:
+ *                       it gets the STUN part only, unless
+ *                       ICE_ALLOW_SAME_ORIGIN_TURN=1). Without TURN credentials
+ *                       a same-origin caller is answered as well. Rate limited
+ *                       per address.
  *
  * Env vars:
  *   PORT        — listen port (default 8787)
@@ -56,7 +61,10 @@
  *   MAX_MESSAGES_PER_MINUTE — per-connection message limit (default 300)
  *   MAX_BUFFERED_BYTES    — a receiver with more than this unsent is dropped (default 1 MiB)
  *   IDLE_TIMEOUT_MS       — close a registered connection that sent nothing for this long (default 0 = off)
- *   ICE_API_TOKEN         — Bearer token that unlocks /ice-servers for non-same-origin callers
+ *   ICE_API_TOKEN         — Bearer token; required to start when TURN_SECRET and TURN_URLS are set
+ *                           (unless ICE_ALLOW_SAME_ORIGIN_TURN=1)
+ *   ICE_ALLOW_SAME_ORIGIN_TURN — set to 1 to let a same-origin caller (decided from request
+ *                           headers, so any non-browser client can claim it) have TURN credentials (default off)
  *   ICE_RATE_LIMIT_PER_MINUTE — /ice-servers requests per client address (default 30)
  *   TRUST_PROXY           — set to 1 behind a proxy that sets Fly-Client-IP / X-Forwarded-For
  */
@@ -65,7 +73,7 @@ import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { WebSocketServer } from 'ws'
-import { getIceServers, assertIceConfig } from './stun-turn.mjs'
+import { getIceServers, assertIceConfig, turnCredentialsConfigured } from './stun-turn.mjs'
 import { RateLimiter, safeEqual, clientIp, envFlag } from './limits.mjs'
 import { PROTOCOL_VERSION, REGISTER_PURPOSE, verifyRegistration } from './auth.mjs'
 
@@ -158,6 +166,17 @@ export function createServer(opts = {}) {
   const maxBufferedBytes = opts.maxBufferedBytes ?? (Number(env.MAX_BUFFERED_BYTES) || 1024 * 1024)
   const idleTimeoutMs = opts.idleTimeoutMs ?? (Number(env.IDLE_TIMEOUT_MS) || 0)
   const iceApiToken = env.ICE_API_TOKEN ?? null
+  const iceSameOriginTurn = envFlag(env.ICE_ALLOW_SAME_ORIGIN_TURN)
+  const turnConfigured = turnCredentialsConfigured(env)
+  // Time-limited TURN credentials are only handed to a caller that holds the
+  // token (or, if the operator says so explicitly, to a same-origin caller),
+  // so with TURN configured one of the two must exist.
+  if (turnConfigured && !iceApiToken && !iceSameOriginTurn) {
+    throw new Error(
+      'ICE_API_TOKEN is required to hand out TURN credentials: a token is required when TURN_SECRET and TURN_URLS are set '
+      + '(set ICE_API_TOKEN, or ICE_ALLOW_SAME_ORIGIN_TURN=1 to let same-origin callers have them without one)',
+    )
+  }
 
   /** @type {Map<string, import('ws').WebSocket>} podId → ws */
   const peers = new Map()
@@ -242,15 +261,29 @@ export function createServer(opts = {}) {
         return res.end(JSON.stringify({ error: 'rate limit exceeded' }))
       }
 
-      // Only a caller holding the token, or the page this server itself
-      // serves, gets credentials. Everyone else is refused.
-      if (!hasValidToken(req) && !isSameOrigin(req)) {
+      // The token is what protects TURN credentials. A same-origin claim is
+      // built from request headers that any non-browser client can send, so
+      // it is only a convenience for the page this server serves: it gets
+      // the full answer when no TURN credentials are involved (or the
+      // operator opted in), otherwise only the plain STUN part.
+      let servers
+      if (hasValidToken(req)) {
+        servers = getIceServers(env)
+      } else if (isSameOrigin(req)) {
+        servers = turnConfigured && !iceSameOriginTurn
+          ? getIceServers(env, Date.now(), { stunOnly: true })
+          : getIceServers(env)
+        if (turnConfigured && !iceSameOriginTurn && servers.length === 0) servers = null
+      } else {
+        servers = null
+      }
+      if (servers === null) {
         res.writeHead(401, headers)
         return res.end(JSON.stringify({ error: 'unauthorized' }))
       }
 
       res.writeHead(200, headers)
-      return res.end(JSON.stringify(getIceServers(env)))
+      return res.end(JSON.stringify(servers))
     }
 
     res.writeHead(404, headers)

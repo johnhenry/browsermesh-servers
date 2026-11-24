@@ -62,10 +62,17 @@ The published `SignalingClient` does not speak protocol 2 yet.
 **HTTP**
 
 - `GET /health` → `{ status, peers }`
-- `GET /ice-servers` → an array of ICE servers with **time-limited TURN
-  credentials**. Answered only to a caller with `Authorization: Bearer
-  <ICE_API_TOKEN>` or the same origin as the server; everyone else gets 401.
-  Rate limited per address; `Cache-Control: no-store`. CORS is granted only to an
+- `GET /ice-servers` → an array of ICE servers, with **time-limited TURN
+  credentials** when `TURN_SECRET` and `TURN_URLS` are set. Those credentials go
+  only to a caller with `Authorization: Bearer <ICE_API_TOKEN>`, and the server
+  refuses to start with TURN configured and no token. A "same origin" caller
+  (`Sec-Fetch-Site: same-origin`, or an `Origin` whose host is the `Host`) is a
+  claim made of request headers, which any client other than a browser can send;
+  it is kept as a convenience for a page this server serves and gets the plain
+  STUN part of the answer (401 if there is none) unless
+  `ICE_ALLOW_SAME_ORIGIN_TURN=1`. With no TURN credentials configured, a
+  same-origin caller is answered as before. Everyone else gets 401. Rate
+  limited per address; `Cache-Control: no-store`. CORS is granted only to an
   exactly listed `ORIGINS` entry, never `*`.
 - ICE: nothing third-party by default (empty list). Configure `STUN_URLS`,
   `TURN_URLS` + `TURN_SECRET` (the coturn `static-auth-secret`; username
@@ -82,7 +89,8 @@ The published `SignalingClient` does not speak protocol 2 yet.
 | `PUBLIC_ORIGIN` | — | authenticated mode: this server's own `ws://`/`wss://` origin (required there) |
 | `AUTH_NONCE_TTL_MS` | 30000 | lifetime of a challenge |
 | `PEER_DISCOVERY` | `all` | `all` or `none` |
-| `ICE_API_TOKEN` | — | bearer token that unlocks `/ice-servers` for non-same-origin callers |
+| `ICE_API_TOKEN` | — | bearer token for `/ice-servers`; the only thing that unlocks TURN credentials by default. **Required to start** when `TURN_SECRET` and `TURN_URLS` are both set (unless `ICE_ALLOW_SAME_ORIGIN_TURN=1`) |
+| `ICE_ALLOW_SAME_ORIGIN_TURN` | off | `1` lets a "same origin" caller (judged from request headers, which any non-browser client can send) receive TURN credentials without the token. Leave it off unless TURN credentials are not worth protecting |
 | `ICE_RATE_LIMIT_PER_MINUTE` | 30 | `/ice-servers` requests per client address |
 | `STUN_URLS` | — | comma-separated STUN URLs of your own |
 | `ALLOW_PUBLIC_STUN` | off | `1` adds a third-party public STUN list |
