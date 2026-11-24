@@ -1,5 +1,5 @@
 /**
- * Tests for the Clawser P2P relay server.
+ * Tests for the BrowserMesh relay server.
  *
  * Uses real HTTP + WebSocket connections against a server started on an
  * OS-assigned ephemeral port (port 0).

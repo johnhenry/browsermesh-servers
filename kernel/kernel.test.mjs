@@ -1,5 +1,5 @@
 /**
- * Tests for the Clawser server-side kernel.
+ * Tests for the BrowserMesh server-side kernel.
  *
  * Uses real file system operations in a temp directory.
  */
@@ -59,7 +59,7 @@ describe('ServerFileSystem', () => {
   let fs
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'clawser-kernel-test-'))
+    tmpDir = mkdtempSync(join(tmpdir(), 'bm-kernel-test-'))
     fs = new ServerFileSystem(tmpDir)
   })
 
@@ -343,7 +343,7 @@ describe('PeerNodeServer', () => {
   let tmpDir
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'clawser-peer-test-'))
+    tmpDir = mkdtempSync(join(tmpdir(), 'bm-peer-test-'))
   })
 
   afterEach(() => {
@@ -469,7 +469,7 @@ describe('createServerKernel', () => {
   let tmpDir
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'clawser-factory-test-'))
+    tmpDir = mkdtempSync(join(tmpdir(), 'bm-factory-test-'))
   })
 
   afterEach(() => {
@@ -531,7 +531,7 @@ describe('ServerFileSystem symlink safety', () => {
   let fs
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'clawser-symlink-test-'))
+    tmpDir = mkdtempSync(join(tmpdir(), 'bm-symlink-test-'))
     fs = new ServerFileSystem(tmpDir)
   })
 
@@ -542,7 +542,7 @@ describe('ServerFileSystem symlink safety', () => {
   it('rejects symlinks pointing outside root', async () => {
     const { symlinkSync, writeFileSync } = await import('node:fs')
     // Create a real file outside the root, then symlink to it
-    const outsideDir = mkdtempSync(join(tmpdir(), 'clawser-outside-'))
+    const outsideDir = mkdtempSync(join(tmpdir(), 'bm-outside-'))
     writeFileSync(join(outsideDir, 'secret.txt'), 'secret data')
     symlinkSync(join(outsideDir, 'secret.txt'), join(tmpDir, 'escape-link'))
 
@@ -607,7 +607,7 @@ describe('PeerNodeServer service auth', () => {
   let tmpDir
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'clawser-auth-test-'))
+    tmpDir = mkdtempSync(join(tmpdir(), 'bm-auth-test-'))
   })
 
   afterEach(() => {

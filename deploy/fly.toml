@@ -1,3 +1,6 @@
+# Older single-app config for the signalling server; CI uses fly.signaling.toml and
+# fly.relay.toml. The app name is the name the app was created under in the Fly
+# account (changing it would create a different app), so it is left as it is.
 app = "clawser-signaling"
 primary_region = "iad"
 
