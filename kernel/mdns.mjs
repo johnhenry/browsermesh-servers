@@ -27,6 +27,16 @@ const SERVICE_TYPE = '_clawser._tcp.local'
 const ANNOUNCE_INTERVAL_MS = 15_000
 const DEFAULT_TTL = 120 // seconds
 
+const DEFAULT_MAX_PEERS = 256
+const INSTANCE_NAME_RE = /^([A-Za-z0-9_-]{1,128})\._clawser\._tcp\.local$/
+const HOST_RE = /^[^\s\u0000-\u001f\u007f-\u009f]+$/u
+
+/** A display label from the network: no control characters, bounded length. */
+function cleanLabel(v) {
+  if (typeof v !== 'string') return ''
+  return v.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, 64).trim()
+}
+
 // ─── MdnsDiscovery ───────────────────────────────────────────────────
 
 export class MdnsDiscovery {
@@ -38,6 +48,8 @@ export class MdnsDiscovery {
   #mdns = null
   #announceTimer = null
   #running = false
+  #maxPeers
+  #createMdns
 
   /** @type {Map<string, { podId: string, host: string, port: number, label: string, discoveredAt: number }>} */
   #peers = new Map()
@@ -52,8 +64,10 @@ export class MdnsDiscovery {
    * @param {string} [opts.label] — human-readable label (default: hostname)
    * @param {string} [opts.host]  — hostname to advertise (default: os.hostname())
    * @param {(msg: string) => void} [opts.onLog]
+   * @param {number} [opts.maxPeers] — most peers remembered (default 256)
+   * @param {() => object} [opts.createMdns] — socket factory (default: multicast-dns), for tests
    */
-  constructor({ podId, port, label, host, onLog }) {
+  constructor({ podId, port, label, host, onLog, maxPeers, createMdns }) {
     if (!podId || typeof podId !== 'string') {
       throw new Error('podId is required')
     }
@@ -65,6 +79,8 @@ export class MdnsDiscovery {
     this.#label = label ?? hostname()
     this.#host = host ?? hostname()
     this.#onLog = onLog ?? (() => {})
+    this.#maxPeers = maxPeers ?? DEFAULT_MAX_PEERS
+    this.#createMdns = createMdns ?? (() => multicastDns({ reuseAddr: true }))
   }
 
   // ── Public API ─────────────────────────────────────────────────────
@@ -77,7 +93,7 @@ export class MdnsDiscovery {
     if (this.#running) return
     this.#running = true
 
-    this.#mdns = multicastDns({ reuseAddr: true })
+    this.#mdns = this.#createMdns()
 
     // Listen for responses containing our service type
     this.#mdns.on('response', (response) => {
@@ -86,8 +102,8 @@ export class MdnsDiscovery {
 
     // Respond to queries for our service type
     this.#mdns.on('query', (query) => {
-      const isOurs = query.questions.some(q =>
-        q.name === SERVICE_TYPE || q.name === `${this.#podId}.${SERVICE_TYPE}`
+      const isOurs = Array.isArray(query?.questions) && query.questions.some(q =>
+        q?.name === SERVICE_TYPE || q?.name === `${this.#podId}.${SERVICE_TYPE}`
       )
       if (isOurs) this.#announce()
     })
@@ -229,13 +245,25 @@ export class MdnsDiscovery {
     })
   }
 
-  /** Process an mDNS response and extract peer info. */
+  /**
+   * Process an mDNS response and extract peer info. Everything in a response
+   * comes from the local network and is untrusted: names, ports and hosts are
+   * validated, the number of remembered peers is bounded, and nothing raw is
+   * logged.
+   */
   #handleResponse(response) {
+    if (!response || typeof response !== 'object') return
+
     // Collect all records by name for correlation
     const srvRecords = new Map()
     const txtRecords = new Map()
 
-    for (const answer of [...(response.answers || []), ...(response.additionals || [])]) {
+    const records = [
+      ...(Array.isArray(response.answers) ? response.answers : []),
+      ...(Array.isArray(response.additionals) ? response.additionals : []),
+    ]
+    for (const answer of records) {
+      if (!answer || typeof answer !== 'object' || typeof answer.name !== 'string') continue
       if (answer.type === 'SRV' && answer.name.endsWith(SERVICE_TYPE)) {
         srvRecords.set(answer.name, answer.data)
       }
@@ -246,9 +274,15 @@ export class MdnsDiscovery {
 
     // Match SRV + TXT records for each instance
     for (const [name, srv] of srvRecords) {
-      const txt = txtRecords.get(name)
-      const meta = this.#parseTxt(txt)
-      const podId = meta.podId || name.replace(`.${SERVICE_TYPE}`, '')
+      // The instance name decides the id; a TXT podId is not consulted.
+      const idMatch = INSTANCE_NAME_RE.exec(name)
+      if (!idMatch || !srv || typeof srv !== 'object') continue
+      const podId = idMatch[1]
+
+      const host = srv.target ?? srv.host
+      const port = srv.port
+      if (typeof host !== 'string' || host.length === 0 || host.length > 253 || !HOST_RE.test(host)) continue
+      if (!Number.isInteger(port) || port < 1 || port > 65535) continue
 
       // Skip self
       if (podId === this.#podId) continue
@@ -256,16 +290,16 @@ export class MdnsDiscovery {
       // Skip if already known
       if (this.#peers.has(podId)) continue
 
-      const peer = {
-        podId,
-        host: srv.target || srv.host,
-        port: srv.port,
-        label: meta.label || podId.slice(0, 8),
-        discoveredAt: Date.now(),
-      }
+      // Bound what a hostile neighbour can make us hold
+      if (this.#peers.size >= this.#maxPeers) continue
+
+      const meta = this.#parseTxt(txtRecords.get(name))
+      const label = cleanLabel(meta.label) || podId.slice(0, 8)
+
+      const peer = { podId, host, port, label, discoveredAt: Date.now() }
 
       this.#peers.set(podId, peer)
-      this.#onLog(`[mdns] discovered: ${podId} at ${peer.host}:${peer.port}`)
+      this.#onLog(`[mdns] discovered: ${podId} at ${host}:${port}`)
 
       for (const cb of this.#discoveredCallbacks) {
         try { cb(peer) } catch { /* non-fatal */ }
@@ -274,11 +308,12 @@ export class MdnsDiscovery {
   }
 
   /**
-   * Parse TXT record data into a key-value map.
+   * Parse TXT record data into a key-value map (null prototype: a key from
+   * the network can never be an inherited name).
    * TXT data comes as an array of Buffers or strings like "key=value".
    */
   #parseTxt(data) {
-    const result = {}
+    const result = Object.create(null)
     if (!data) return result
 
     const entries = Array.isArray(data) ? data : [data]

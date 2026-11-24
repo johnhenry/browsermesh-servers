@@ -6,7 +6,7 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "test": "node --test kernel.test.mjs"
+    "test": "node --test"
   },
   "dependencies": {
     "browsermesh-pod": "^0.2.0",

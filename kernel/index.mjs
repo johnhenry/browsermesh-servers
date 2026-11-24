@@ -17,12 +17,13 @@
  *   LLM_MODEL     — model name (default: gpt-4o-mini / claude-sonnet-4-20250514)
  */
 
-import { readFile, writeFile, mkdir, readdir, stat, unlink, access, realpath } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, stat, lstat, unlink, access, realpath } from 'node:fs/promises'
 import { existsSync, mkdirSync } from 'node:fs'
-import { join, resolve, relative, dirname, basename } from 'node:path'
+import { join, resolve, relative, dirname, basename, sep } from 'node:path'
 import { webcrypto } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { hostname } from 'node:os'
+import { ServiceRegistry, safeEqual } from './services.mjs'
 
 // ─── ServerIdentity ──────────────────────────────────────────────────
 
@@ -102,6 +103,11 @@ class ServerIdentity {
 
 // ─── ServerFileSystem ────────────────────────────────────────────────
 
+/** True when `p` is `root` or lies below it (a whole path segment, not a text prefix). */
+function isWithin(root, p) {
+  return p === root || p.startsWith(root.endsWith(sep) ? root : root + sep)
+}
+
 /**
  * File system adapter for server-side storage.
  * Wraps Node.js fs with a consistent async API matching the browser OPFS pattern.
@@ -146,21 +152,33 @@ class ServerFileSystem {
       throw new Error('path is required')
     }
     await this.#ensureRootResolved()
-    const resolved = resolve(this.#rootDir, String(path))
-    const rel = relative(this.#rootDir, resolved)
-    if (rel.startsWith('..') || resolve(this.#rootDir, rel) !== resolved) {
+    const root = this.#rootDir
+    const resolved = resolve(root, String(path))
+    if (!isWithin(root, resolved)) {
       throw new Error('path traversal not allowed')
     }
-    // Resolve symlinks and re-check containment
-    try {
-      const real = await realpath(resolved)
-      if (!real.startsWith(this.#rootDir)) {
-        throw new Error('path traversal not allowed (symlink)')
+
+    // Resolve symlinks and re-check containment. A path that does not exist
+    // yet (the write case) is checked through its deepest existing ancestor,
+    // so a symlinked directory cannot be used to create files outside the
+    // root, and a dangling symlink is never followed.
+    let probe = resolved
+    for (;;) {
+      try {
+        const real = await realpath(probe)
+        if (!isWithin(root, real)) {
+          throw new Error('path traversal not allowed (symlink)')
+        }
+        return probe === resolved ? real : join(real, relative(probe, resolved))
+      } catch (err) {
+        if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') throw err
+        // Something is there but cannot be resolved: a dangling symlink.
+        const dangling = await lstat(probe).then(() => true, () => false)
+        if (dangling) throw new Error('path traversal not allowed (dangling symlink)')
+        const parent = dirname(probe)
+        if (parent === probe) throw err
+        probe = parent
       }
-      return real
-    } catch (err) {
-      if (err.code === 'ENOENT') return resolved // file doesn't exist yet (write case)
-      throw err
     }
   }
 
@@ -493,7 +511,7 @@ class PeerNodeServer {
   #signalingUrl
   #state = 'stopped'
   #connectedPeers = new Set()
-  #services = new Map()
+  #services
   #onLog
   #ws = null
   #serviceToken
@@ -512,10 +530,12 @@ class PeerNodeServer {
    * @param {string} [opts.llmApiKey]     — API key for the LLM provider
    * @param {string} [opts.llmModel]      — model name override
    * @param {number} [opts.mdnsPort]      — port to advertise via mDNS (enables LAN discovery)
+   * @param {string[]} [opts.remoteServices] — services remote callers may reach (default: fs, agent)
    * @param {(msg: string) => void} [opts.onLog]
    */
-  constructor({ identity, dataDir, signalingUrl, agentName, serviceToken, maxMemories, llmProvider, llmApiKey, llmModel, mdnsPort, onLog }) {
+  constructor({ identity, dataDir, signalingUrl, agentName, serviceToken, maxMemories, llmProvider, llmApiKey, llmModel, mdnsPort, remoteServices, onLog }) {
     this.#identity = identity
+    this.#services = new ServiceRegistry(remoteServices ? { remote: remoteServices } : undefined)
     this.#fileSystem = new ServerFileSystem(dataDir ?? './data')
     this.#agent = new ServerAgent({
       name: agentName ?? 'server-agent',
@@ -633,11 +653,20 @@ class PeerNodeServer {
 
   /**
    * Register a named service.
+   *
+   * Remote callers reach only the methods declared here (the handler's own
+   * function properties, or `opts.methods`), and only if the service is on the
+   * remote allow-list (`fs` and `agent` by default; pass `{ remote: true }` to
+   * add another). In-process code can always use `getService`.
+   *
    * @param {string} name
    * @param {object} handler — map of method names to async functions
+   * @param {object} [opts]
+   * @param {string[]} [opts.methods] — declare callable methods explicitly (may be prototype methods)
+   * @param {boolean} [opts.remote]   — allow remote calls to this service
    */
-  registerService(name, handler) {
-    this.#services.set(name, handler)
+  registerService(name, handler, opts) {
+    this.#services.register(name, handler, opts)
   }
 
   /**
@@ -645,16 +674,16 @@ class PeerNodeServer {
    * @returns {string[]}
    */
   listServices() {
-    return Array.from(this.#services.keys())
+    return this.#services.list()
   }
 
   /**
-   * Get a registered service.
+   * Get a registered service (trusted, in-process use).
    * @param {string} name
    * @returns {object|undefined}
    */
   getService(name) {
-    return this.#services.get(name)
+    return this.#services.handler(name)
   }
 
   /**
@@ -663,7 +692,7 @@ class PeerNodeServer {
    * @returns {boolean}
    */
   unregisterService(name) {
-    return this.#services.delete(name)
+    return this.#services.unregister(name)
   }
 
   /** @returns {string} */
@@ -680,14 +709,10 @@ class PeerNodeServer {
    * @returns {Promise<object>}
    */
   async callService(name, method, args, token) {
-    if (token !== this.#serviceToken) {
+    if (!safeEqual(token, this.#serviceToken)) {
       return { success: false, error: 'unauthorized' }
     }
-    const svc = this.#services.get(name)
-    if (!svc || !svc[method]) {
-      return { success: false, error: `unknown service method: ${name}.${method}` }
-    }
-    return svc[method](args)
+    return this.#services.call(name, method, args)
   }
 
   /** @returns {object|null} MdnsDiscovery instance or null */
@@ -743,6 +768,7 @@ async function createServerKernel(opts = {}) {
     llmApiKey: opts.llmApiKey,
     llmModel: opts.llmModel,
     mdnsPort: opts.mdnsPort,
+    remoteServices: opts.remoteServices,
     onLog: opts.onLog,
   })
 }
