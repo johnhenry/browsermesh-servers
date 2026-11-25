@@ -16,7 +16,9 @@ describe('@johnhenry/wsh/pipe-relay as the relay loads it', () => {
     const mod = await import('@johnhenry/wsh/pipe-relay')
     assert.equal(typeof mod.createPipeRelay, 'function')
     const relay = mod.createPipeRelay({ onLog: () => {} })
-    assert.deepEqual(relay.stats(), { waiting: 0, pipes: 0 })
+    // 0.53.0 added `retired` to stats(); the relay does not enable retirePaired, so it stays 0.
+    const { waiting, pipes } = relay.stats()
+    assert.deepEqual({ waiting, pipes }, { waiting: 0, pipes: 0 })
     await relay.close()
   })
 
