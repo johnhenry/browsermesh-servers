@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Relay: `@johnhenry/wsh` pinned to exactly 0.52.0 (was 0.50.0). The relay only uses wsh's pipe relay and sends no gateway failures itself, but a wsh Node gateway timeout is now numbered 8 (0.51.0 and earlier sent 5, which 0.52.0 reads as "gateway disabled"); a client on 0.51.0 or earlier reads 8 as an unknown gateway failure, a client on 0.52.0 reads it as a timeout. 0.51.0 added object features the relay does not use. The pipe route is still off unless `PIPE_RELAY=1`
 - Relay: `@johnhenry/wsh` pinned to exactly 0.50.0 (was `^0.45.0`, which admits 0.45 only); tested against 0.45.0, 0.46.1, 0.48.0 and 0.50.0. Relay test dependencies updated to browsermesh-transport 0.9 / primitives 0.6.1 (their peer range admits newer wsh). `relay/package-lock.json` now lists the dependency tree. The pipe route is still off unless `PIPE_RELAY=1`
 
 - Signalling (authenticated mode): one verified pod id may hold up to `MAX_CONNECTIONS_PER_POD` (default 2) connections, so a pod with a primary and a secondary connection to the same server no longer replaces itself in a loop; a connection pushed out by a newer one is sent `code: 'replaced'`, `reconnect: false` and closed `4409`. Open mode is unchanged
