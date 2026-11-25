@@ -208,7 +208,7 @@ class RelayServer {
  * @param {number} [opts.maxMessagesPerMinute]    — per-peer rate limit
  * @param {(msg: string) => void} [opts.onLog]
  * @param {object} [opts.env]                    — environment overrides
- * @returns {{ server: http.Server, wss: WebSocketServer, relay: RelayServer, listen: (port?: number) => Promise<number>, close: () => Promise<void> }}
+ * @returns {{ server: http.Server, wss: WebSocketServer, relay: RelayServer, listen: (port?: number, host?: string) => Promise<number>, close: () => Promise<void> }}
  */
 function createRelayServer(opts = {}) {
   const env = opts.env ?? process.env
@@ -469,18 +469,21 @@ function createRelayServer(opts = {}) {
   /**
    * Start listening and return the assigned port.
    * @param {number} [listenPort]
+   * @param {string} [host] — address to bind (default: every address, as before)
    * @returns {Promise<number>}
    */
-  function listen(listenPort) {
+  function listen(listenPort, host) {
     const p = listenPort ?? port
     return (pipe ? pipe.start() : Promise.resolve()).then(() => new Promise((resolve, reject) => {
       const onError = (err) => reject(err)
       server.once('error', onError)
-      server.listen(p, () => {
+      const onListening = () => {
         server.removeListener('error', onError)
         const addr = server.address()
         resolve(typeof addr === 'object' ? addr.port : p)
-      })
+      }
+      if (host === undefined) server.listen(p, onListening)
+      else server.listen(p, host, onListening)
     }))
   }
 

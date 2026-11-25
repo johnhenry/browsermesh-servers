@@ -142,7 +142,7 @@ describe('open mode stamps peers as unverified', () => {
 
   it('says so in registered, peers, peer-joined and every forwarded message', async () => {
     instance = createServer({ port: 0 })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
     const a = await Client.connect(port)
     const b = await Client.connect(port)
     a.send({ type: 'register', podId: 'pod-a' })
@@ -178,7 +178,7 @@ describe('authenticated mode (protocol 2)', () => {
       env: { PUBLIC_ORIGIN: ORIGIN, ...(opts.env ?? {}) },
       ...opts.server,
     })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   }
   afterEach(async () => { await instance?.close(); instance = null })
 
@@ -203,7 +203,7 @@ describe('authenticated mode (protocol 2)', () => {
 
     await instance.close()
     instance = createServer({ port: 0 })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
     const open = await Client.connect(port)
     open.send({ type: 'register', podId: 'p' })
     await open.type('registered')
@@ -426,7 +426,7 @@ describe('authenticated mode (protocol 2)', () => {
       c.close()
     }
     const open = createServer({ port: 0 })
-    const p = await open.listen(0)
+    const p = await open.listen(0, '127.0.0.1')
     try {
       for (const raw of ['null', '[]', '"str"', '123', 'true']) {
         const c = await Client.connect(p)
@@ -628,7 +628,7 @@ describe('open mode: one connection per pod id, as before', () => {
   it('refuses a second connection for a pod id and leaves the first alone; the limit setting changes nothing', async () => {
     for (const env of [{}, { MAX_CONNECTIONS_PER_POD: '8' }]) {
       instance = createServer({ port: 0, env })
-      const port = await instance.listen(0)
+      const port = await instance.listen(0, '127.0.0.1')
       const first = await Client.connect(port)
       first.send({ type: 'register', podId: 'pod-a' })
       await first.type('registered')
@@ -656,7 +656,7 @@ describe('peer discovery', () => {
 
   it('PEER_DISCOVERY=none sends no peer list, no joins and no leaves', async () => {
     instance = createServer({ port: 0, env: { PEER_DISCOVERY: 'none' } })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
     const a = await Client.connect(port)
     const b = await Client.connect(port)
     a.send({ type: 'register', podId: 'pod-a' })

@@ -59,7 +59,7 @@ describe('signaling server', () => {
 
   beforeEach(async () => {
     instance = createServer({ port: 0 })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -407,7 +407,7 @@ describe('origin restriction', () => {
 
   beforeEach(async () => {
     instance = createServer({ port: 0, origins: 'http://localhost:3000,https://app.example' })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -456,7 +456,7 @@ describe('signaling connection limits', () => {
 
   beforeEach(async () => {
     instance = createServer({ port: 0, maxConnections: 2 })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -493,7 +493,7 @@ describe('signaling rate limiting', () => {
 
   beforeEach(async () => {
     instance = createServer({ port: 0, maxMessagesPerMinute: 3 })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -536,7 +536,7 @@ describe('signaling encapsulated peers', () => {
 
   beforeEach(async () => {
     instance = createServer({ port: 0 })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -566,7 +566,7 @@ describe('signaling incremental peer events', () => {
 
   beforeEach(async () => {
     instance = createServer({ port: 0 })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -628,7 +628,7 @@ describe('signaling incremental peer events', () => {
 describe('signaling AUTH_MODE=open', () => {
   it('does not require signature', async () => {
     const instance = createServer({ port: 0, authMode: 'open' })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
 
     const { ws, messages } = await connect(port)
     send(ws, { type: 'register', podId: 'pod-open' })
@@ -660,7 +660,7 @@ describe('real SignalingClient (browsermesh-core) against this real server', () 
 
   beforeEach(async () => {
     instance = createServer({ port: 0, authMode: 'open' })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {

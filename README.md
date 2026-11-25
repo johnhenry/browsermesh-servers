@@ -147,12 +147,13 @@ two ends authenticate each other and seal the session; the relay sees
 ciphertext, its sizes and timing, who dials which id and when, and can drop,
 delay or end a pipe. Admission only limits abuse (Origin allow-list, per-address
 and per-id rate limits, a per-address cap) and a third connection to an id that
-already has a pair is never joined to it. Use `wss://` (the proxy's TLS). Needs
-Node 26 for the end-to-end wsh link on the client side (wsh declares `node >=26`);
-the relay itself, with `@johnhenry/wsh` pinned to 0.50.0, was run on Node 24
-(the Docker image's Node) pairing two real wsh peer links. The version is pinned
-exactly in `relay/package.json` and both lockfiles; it is loaded only when
-`PIPE_RELAY=1`.
+already has a pair is never joined to it. Use `wss://` (the proxy's TLS). wsh
+declares `node >=26` and the Docker image runs Node 26. The relay loads only
+`@johnhenry/wsh/pipe-relay`, a single file with no imports, and only when
+`PIPE_RELAY=1`; `relay/wsh-module.test.mjs` fails if that stops being true, and
+the end-to-end test that pairs two real wsh peer links runs on any Node whose Web
+Crypto has ML-KEM-768 rather than on a version number. `@johnhenry/wsh` is pinned
+exactly (0.54.2) in `relay/package.json` and both lockfiles.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -231,7 +232,7 @@ npm test                    # all three suites
 ```
 
 Tests use real HTTP/WebSocket connections on ephemeral ports. CI runs them on
-Node 24 and 26, plus a job against the newest published
+Node 26, plus a job against the newest published
 `@johnhenry/browsermesh-*` packages.
 
 ## Deployment and releases
