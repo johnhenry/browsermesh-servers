@@ -148,9 +148,8 @@ ciphertext, its sizes and timing, who dials which id and when, and can drop,
 delay or end a pipe. Admission only limits abuse (Origin allow-list, per-address
 and per-id rate limits, a per-address cap) and a third connection to an id that
 already has a pair is never joined to it. Use `wss://` (the proxy's TLS). Needs
-Node 26 for the end-to-end wsh link on the client side (wsh declares `node >=26`);
-the relay itself, with `@johnhenry/wsh` pinned to 0.50.0, was run on Node 24
-(the Docker image's Node) pairing two real wsh peer links. The version is pinned
+Node 26 (wsh declares `node >=26`); the Docker image runs Node 26, and the relay
+was run in it pairing two ends through the pipe route. The version is pinned
 exactly in `relay/package.json` and both lockfiles; it is loaded only when
 `PIPE_RELAY=1`.
 
@@ -231,7 +230,7 @@ npm test                    # all three suites
 ```
 
 Tests use real HTTP/WebSocket connections on ephemeral ports. CI runs them on
-Node 24 and 26, plus a job against the newest published
+Node 26, plus a job against the newest published
 `@johnhenry/browsermesh-*` packages.
 
 ## Deployment and releases
