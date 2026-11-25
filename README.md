@@ -149,8 +149,8 @@ delay or end a pipe. Admission only limits abuse (Origin allow-list, per-address
 and per-id rate limits, a per-address cap) and a third connection to an id that
 already has a pair is never joined to it. Use `wss://` (the proxy's TLS). Needs
 Node 26 for the end-to-end wsh link on the client side (wsh declares `node >=26`);
-the relay itself, with `@johnhenry/wsh` pinned to 0.50.0, was run on Node 24
-(the Docker image's Node) pairing two real wsh peer links. The version is pinned
+the relay itself, with `@johnhenry/wsh` pinned to 0.52.0 (0.50.0 was run on Node 24,
+the Docker image's Node), pairs two real wsh peer links. The version is pinned
 exactly in `relay/package.json` and both lockfiles; it is loaded only when
 `PIPE_RELAY=1`.
 
