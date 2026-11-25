@@ -1,8 +1,8 @@
 /**
  * Two real `@johnhenry/browsermesh-transport` wsh peer links (WshPeerLinks)
  * pair through this server's pipe-relay route, in one process, and exchange
- * messages. Runs on any Node whose Web Crypto has ML-KEM-768 (the Docker image's
- * Node 24 included; CI runs it on 24 and 26); skipped on one that does not.
+ * messages. Runs on any Node whose Web Crypto has ML-KEM-768 (the deployed image
+ * and CI run Node 26); skipped on a runtime that does not.
  */
 
 import { describe, it, afterEach } from 'node:test'
@@ -14,8 +14,7 @@ import { createRelayServer } from './index.mjs'
 const ORIGIN = 'https://app.example'
 
 // wsh's sealed session needs ML-KEM-768 in Web Crypto. Ask the runtime rather than the version number: wsh
-// declares `node >=26`, but the relay and this test also run on the image's Node 24 where that algorithm exists
-// (24.22 here), and a Node that lacks it skips instead of failing.
+// declares `node >=26`; a runtime that lacks the algorithm skips the test instead of failing.
 const mlKem = await crypto.subtle
   .generateKey({ name: 'ML-KEM-768' }, false, ['encapsulateBits', 'decapsulateBits'])
   .then(() => true, () => false)

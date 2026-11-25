@@ -1,10 +1,9 @@
 /**
- * What the relay loads from @johnhenry/wsh, and why that is safe on the Node the Docker image runs.
+ * What the relay loads from @johnhenry/wsh.
  *
- * wsh declares `engines.node >=26`, the image runs Node 24. The only wsh code the relay ever loads is
- * `@johnhenry/wsh/pipe-relay` (and only when PIPE_RELAY=1). These tests fail if that stops being a
- * self-contained module (an import of another wsh file or a node: builtin would pull in code that was
- * written for Node 26), and they run on every Node in the CI matrix, so the claim is proved on 24 as well as 26.
+ * The only wsh code the relay ever loads is `@johnhenry/wsh/pipe-relay` (and only when PIPE_RELAY=1).
+ * These tests fail if that stops being a self-contained module (an import of another wsh file or a
+ * node: builtin would pull in code the relay has not been checked against).
  */
 
 import { describe, it } from 'node:test'

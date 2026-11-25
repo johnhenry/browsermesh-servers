@@ -2,7 +2,9 @@
 
 ## Unreleased
 
+- Node 26: the Docker images (`deploy/Dockerfile`, `Dockerfile.relay`, `Dockerfile.signaling`) move from `node:24-slim` to `node:26-slim`, the deploy workflow's test job and CI run on Node 26 only, and `engines.node` is `>=26.0.0` (`@johnhenry/wsh` declares `node >=26`). Merging deploys both services on the new Node major; check `/health` on both apps afterwards. To roll back, revert the merge commit and let it deploy
 - Relay tests: the test servers bind 127.0.0.1 (`listen(port, host)`, new optional second argument; the default bind is unchanged) so a connection meant for the relay cannot reach another local program that holds the same port number, and a failed connect in the pipe tests fails the test instead of leaving it waiting. No change to how the relay serves
+- Signalling tests: the test servers bind 127.0.0.1 (`listen(port, host)`, new optional second argument; the default bind is unchanged) so a connection meant for the server cannot reach another local program that holds the same port number. No change to how the server runs
 - Relay: `@johnhenry/wsh` pinned to exactly 0.54.2 (was 0.50.0). The relay only loads wsh's pipe relay and sends no gateway failures itself. Between 0.50.0 and 0.54.2 the pipe relay gained an opt-in `retirePaired` (not enabled here) and a stable list of close reasons, and a message above the size limit now closes the partner with `message too large` instead of `peer closed`; the relay's own close codes and options are unchanged. The pipe route is still off unless `PIPE_RELAY=1`
 - Relay tests: the end-to-end wsh link test is gated on the runtime having ML-KEM-768 in Web Crypto instead of on a Node version number, and a new test fails if wsh's `pipe-relay` module (the only part of wsh the relay loads) stops being import-free. No change to what is deployed by this entry
 - Relay: `@johnhenry/wsh` pinned to exactly 0.50.0 (was `^0.45.0`, which admits 0.45 only); tested against 0.45.0, 0.46.1, 0.48.0 and 0.50.0. Relay test dependencies updated to browsermesh-transport 0.9 / primitives 0.6.1 (their peer range admits newer wsh). `relay/package-lock.json` now lists the dependency tree. The pipe route is still off unless `PIPE_RELAY=1`
@@ -15,7 +17,6 @@
 - Relay: origin allow-list, per-address limits, backpressure, idle timeout; envelopes stamped `sourceVerified: false`; optional wsh pipe-relay route (`PIPE_RELAY=1`)
 - Kernel: remote calls reach only declared methods of allow-listed services; constant-time token check; contained file paths; validated mDNS input; mDNS service renamed `_browsermesh._tcp` (the former `_clawser` name still works)
 - Depend on the scoped `@johnhenry/browsermesh-*` packages
-- Signalling tests: the test servers bind 127.0.0.1 (`listen(port, host)`, new optional second argument; the default bind is unchanged) so a connection meant for the server cannot reach another local program that holds the same port number. No change to how the server runs
 
 ## 0.1.0 (2026-03-15)
 
