@@ -1,8 +1,8 @@
 /**
  * Two real `@johnhenry/browsermesh-transport` wsh peer links (WshPeerLinks)
  * pair through this server's pipe-relay route, in one process, and exchange
- * messages. Needs the Node that @johnhenry/wsh supports (26+); skipped on
- * older Nodes.
+ * messages. Runs on any Node whose Web Crypto has ML-KEM-768 (the Docker image's
+ * Node 24 included; CI runs it on 24 and 26); skipped on one that does not.
  */
 
 import { describe, it, afterEach } from 'node:test'
@@ -12,7 +12,14 @@ import { PodIdentity } from '@johnhenry/browsermesh-primitives'
 import { createRelayServer } from './index.mjs'
 
 const ORIGIN = 'https://app.example'
-const supported = Number(process.versions.node.split('.')[0]) >= 26
+
+// wsh's sealed session needs ML-KEM-768 in Web Crypto. Ask the runtime rather than the version number: wsh
+// declares `node >=26`, but the relay and this test also run on the image's Node 24 where that algorithm exists
+// (24.22 here), and a Node that lacks it skips instead of failing.
+const mlKem = await crypto.subtle
+  .generateKey({ name: 'ML-KEM-768' }, false, ['encapsulateBits', 'decapsulateBits'])
+  .then(() => true, () => false)
+const supported = mlKem
 
 /** ws with an Origin header (as a browser sends), recording every byte a client sends. */
 function recordingWebSocket(wire) {
@@ -37,7 +44,7 @@ function once(links, event, pred = () => true) {
   })
 }
 
-describe('wsh peer links through the pipe-relay route', { skip: supported ? false : 'needs Node 26+ (@johnhenry/wsh)' }, () => {
+describe('wsh peer links through the pipe-relay route', { skip: supported ? false : 'this Node has no ML-KEM-768 in Web Crypto (needed by wsh)' }, () => {
   let instance
   const toClose = []
   afterEach(async () => {
