@@ -149,7 +149,7 @@ const FORWARDABLE = new Set(['offer', 'answer', 'ice-candidate', 'signal'])
  * @param {string} [opts.authMode]   — 'open' | 'authenticated'
  * @param {object} [opts.env]        — environment overrides
  * @param {() => number} [opts.now]  — clock (ms), for tests
- * @returns {{ server: http.Server, wss: WebSocketServer, peerCount: number, listPeers: () => string[], listen: (port?: number) => Promise<number>, close: () => Promise<void> }}
+ * @returns {{ server: http.Server, wss: WebSocketServer, peerCount: number, listPeers: () => string[], listen: (port?: number, host?: string) => Promise<number>, close: () => Promise<void> }}
  */
 export function createServer(opts = {}) {
   const env = opts.env ?? process.env
@@ -619,18 +619,21 @@ export function createServer(opts = {}) {
    * Pass port 0 for an OS-assigned ephemeral port.
    *
    * @param {number} [listenPort]
+   * @param {string} [host] — address to bind (default: every address, as before)
    * @returns {Promise<number>} — the actual port the server is listening on
    */
-  function listen(listenPort) {
+  function listen(listenPort, host) {
     const p = listenPort ?? port
     return new Promise((resolve, reject) => {
       const onError = (err) => reject(err)
       server.once('error', onError)
-      server.listen(p, () => {
+      const onListening = () => {
         server.removeListener('error', onError)
         const addr = server.address()
         resolve(typeof addr === 'object' ? addr.port : p)
-      })
+      }
+      if (host === undefined) server.listen(p, onListening)
+      else server.listen(p, host, onListening)
     })
   }
 

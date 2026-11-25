@@ -198,7 +198,7 @@ describe('GET /ice-servers access', () => {
 
   async function start(env = {}) {
     instance = createServer({ port: 0, env })
-    return instance.listen(0)
+    return instance.listen(0, '127.0.0.1')
   }
   const turnEnv = { TURN_URLS: 'turn:turn.example.org:3478', TURN_SECRET: SECRET, ICE_API_TOKEN: TOKEN }
 
@@ -382,7 +382,7 @@ describe('CORS on /health and /ice-servers', () => {
 
   async function start(env = {}) {
     instance = createServer({ port: 0, env })
-    return instance.listen(0)
+    return instance.listen(0, '127.0.0.1')
   }
 
   it('never answers with a wildcard origin', async () => {
@@ -499,7 +499,7 @@ describe('the deployed configuration (open mode, no TURN, no token, TRUST_PROXY=
 
   it('answers every kind of caller exactly as before', async () => {
     instance = createServer({ port: 0, env: LIVE })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
     const fly = { 'Fly-Client-IP': '203.0.113.7' }
     const cases = [
       ['no claim', {}, 401, { error: 'unauthorized' }],
@@ -530,7 +530,7 @@ describe('the deployed configuration (open mode, no TURN, no token, TRUST_PROXY=
 
   it('keeps the per-address limit, keyed by the proxy-supplied address', async () => {
     instance = createServer({ port: 0, env: { ...LIVE, ICE_RATE_LIMIT_PER_MINUTE: '2' } })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
     const a = { 'Fly-Client-IP': '203.0.113.1' }
     const b = { 'Fly-Client-IP': '203.0.113.2' }
     assert.equal((await rawGet(port, '/ice-servers', a)).status, 401)
