@@ -12,6 +12,7 @@
 - Relay: origin allow-list, per-address limits, backpressure, idle timeout; envelopes stamped `sourceVerified: false`; optional wsh pipe-relay route (`PIPE_RELAY=1`)
 - Kernel: remote calls reach only declared methods of allow-listed services; constant-time token check; contained file paths; validated mDNS input; mDNS service renamed `_browsermesh._tcp` (the former `_clawser` name still works)
 - Depend on the scoped `@johnhenry/browsermesh-*` packages
+- Signalling tests: the test servers bind 127.0.0.1 (`listen(port, host)`, new optional second argument; the default bind is unchanged) so a connection meant for the server cannot reach another local program that holds the same port number. No change to how the server runs
 
 ## 0.1.0 (2026-03-15)
 

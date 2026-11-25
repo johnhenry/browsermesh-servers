@@ -48,7 +48,7 @@ describe('signaling limits', () => {
 
   async function start(opts = {}) {
     instance = createServer({ port: 0, ...opts })
-    return instance.listen(0)
+    return instance.listen(0, '127.0.0.1')
   }
 
   it('limits concurrent connections per client address and frees the slot on close', async () => {
@@ -169,7 +169,7 @@ describe('signaling does not log what clients send', () => {
     for (const k of Object.keys(orig)) console[k] = (...a) => lines.push(a.map(String).join(' '))
     const instance = createServer({ port: 0 })
     try {
-      const port = await instance.listen(0)
+      const port = await instance.listen(0, '127.0.0.1')
       const c = await Client.connect(port)
       const marker = 'CLIENT-CONTROLLED-MARKER'
       c.send({ type: 'register', podId: marker })
