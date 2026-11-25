@@ -62,7 +62,7 @@ describe('relay limits and input handling', () => {
 
   async function start(opts = {}) {
     instance = createRelayServer({ port: 0, onLog: () => {}, ...opts })
-    return instance.listen(0)
+    return instance.listen(0, '127.0.0.1')
   }
 
   it('answers a message that is not a JSON object with an error, before and after registering', async () => {

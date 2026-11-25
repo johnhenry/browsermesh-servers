@@ -14,7 +14,12 @@ import { createRelayServer } from './index.mjs'
 const ORIGIN = 'https://app.example'
 const newId = () => randomBytes(16).toString('base64url')
 
-/** Open a socket and wait for the outcome: { ws } or { status } when the upgrade was refused. */
+/**
+ * Open a socket and wait for the outcome: { ws }, { status } when the upgrade was refused, or { error }
+ * when the connection failed before any response. (ws marks a socket CLOSING before it emits that
+ * 'error', so the error must settle the promise whatever the readyState: a failed connect must fail the
+ * test that made it, not leave it waiting for an event that never comes.)
+ */
 function open(port, id, { role, origin = ORIGIN, path = '/r', headers = {} } = {}) {
   const url = `ws://127.0.0.1:${port}${path}/${id}${role ? `?role=${role}` : ''}`
   const ws = new WebSocket(url, { headers: { ...(origin ? { Origin: origin } : {}), ...headers } })
@@ -25,7 +30,7 @@ function open(port, id, { role, origin = ORIGIN, path = '/r', headers = {} } = {
   return new Promise((resolve) => {
     ws.once('open', () => resolve({ ws, frames, closed }))
     ws.once('unexpected-response', (_req, res) => { res.resume(); resolve({ status: res.statusCode, closed }) })
-    ws.once('error', (err) => { if (!ws.readyState || ws.readyState === 0) resolve({ error: err, closed }) })
+    ws.once('error', (err) => resolve({ error: err, closed }))
   })
 }
 
@@ -50,14 +55,14 @@ describe('pipe relay route', () => {
       env: { PIPE_RELAY: '1', PIPE_ORIGINS: ORIGIN, ...env },
       ...opts,
     })
-    return instance.listen(0)
+    return instance.listen(0, '127.0.0.1')
   }
 
   // ── off by default, configuration ──────────────────────────────
 
   it('is off unless enabled: the route answers 404 and the JSON relay still works', async () => {
     instance = createRelayServer({ port: 0, onLog: () => {}, env: {} })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
     const r = await open(port, newId(), { role: 'host' })
     assert.equal(r.status, 404)
     assert.equal(instance.pipe, null)

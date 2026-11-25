@@ -53,7 +53,7 @@ describe('wsh peer links through the pipe-relay route', { skip: supported ? fals
       onLog: () => {},
       env: { PIPE_RELAY: '1', PIPE_ORIGINS: ORIGIN },
     })
-    const port = await instance.listen(0)
+    const port = await instance.listen(0, '127.0.0.1')
 
     const [a, b, c] = await Promise.all([PodIdentity.generate(), PodIdentity.generate(), PodIdentity.generate()])
     const wire = []

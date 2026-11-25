@@ -134,7 +134,7 @@ describe('relay server', () => {
 
   beforeEach(async () => {
     instance = createRelayServer({ port: 0, onLog: () => {} })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
@@ -355,7 +355,7 @@ describe('relay connection limits', () => {
 
   beforeEach(async () => {
     instance = createRelayServer({ port: 0, maxConnections: 2, onLog: () => {} })
-    port = await instance.listen(0)
+    port = await instance.listen(0, '127.0.0.1')
   })
 
   afterEach(async () => {
