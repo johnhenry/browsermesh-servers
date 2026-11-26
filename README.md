@@ -153,7 +153,17 @@ declares `node >=26` and the Docker image runs Node 26. The relay loads only
 `PIPE_RELAY=1`; `relay/wsh-module.test.mjs` fails if that stops being true, and
 the end-to-end test that pairs two real wsh peer links runs on any Node whose Web
 Crypto has ML-KEM-768 rather than on a version number. `@johnhenry/wsh` is pinned
-exactly (0.54.2) in `relay/package.json` and both lockfiles.
+exactly (0.57.0) in `relay/package.json` and both lockfiles.
+
+**Half-close (wsh 0.57).** wsh 0.57 keeps a half-closed gateway connection open until both sides have finished or nothing has
+moved for five minutes (`gateway.halfCloseIdleMs`), where it used to end it a second after one side finished sending. That is a
+rule of wsh hosts and clients, and this relay runs neither: the pipe route copies WebSocket frames between two sockets, and a
+half-close is one frame inside a session, which the route never reads. So a half-close does not end a pair, and nothing here
+needs a `halfCloseIdleMs`. What ends a pair is the route's own: a WebSocket close by either end (the partner is closed too), a
+pipe with no byte either way for `PIPE_IDLE_TIMEOUT_MS` (300000, the same five minutes; a wsh client's keepalive pings count as
+traffic), `PIPE_MAX_LIFETIME_MS` (one hour) and `PIPE_MAX_BYTES`. The `pipe-relay` module is byte for byte the one of 0.54.2, so a
+client or host on an older wsh sees exactly what it saw; `relay/half-close.test.mjs` runs a real wsh host and client through the
+route with a late answer after a half-close, a half-closed and abandoned connection beside a working one, and the idle bound.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
