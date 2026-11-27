@@ -103,6 +103,25 @@ describe('pipe relay route', () => {
     host.ws.close(); op.ws.close()
   })
 
+  it('has no gateway of its own (wsh 0.60 relay-gateway): it states no features, and what an operator sends a host is bytes it copies, never a request it carries out or answers', async () => {
+    const port = await start()
+    const id = newId()
+    const host = await open(port, id, { role: 'host' })
+    const op = await open(port, id)
+    assert.ok(host.ws && op.ws)
+
+    // Bytes shaped like a gateway open to a host's network: the route copies them to the host and
+    // sends the operator nothing of its own (no hello, no features, no answer, no refusal).
+    const open1 = Buffer.from(JSON.stringify({ type: 'OpenTcp', host: '127.0.0.1', port: 1 }))
+    op.ws.send(open1)
+    const got = await nextFrame(host)
+    assert.deepEqual(Buffer.from(got.data), open1)
+    await new Promise((r) => setTimeout(r, 100))
+    assert.equal(op.frames.length, 0)
+    assert.equal(host.frames.length, 1)
+    host.ws.close(); op.ws.close()
+  })
+
   it('holds what the first side sends until its partner arrives (bounded), then delivers it in order', async () => {
     const port = await start()
     const id = newId()
