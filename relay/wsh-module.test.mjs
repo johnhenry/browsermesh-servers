@@ -22,6 +22,31 @@ describe('@johnhenry/wsh/pipe-relay as the relay loads it', () => {
     await relay.close()
   })
 
+  // wsh 0.60 added the feature `relay-gateway` and the option `relay: { carryGateway }` to the FULL wsh
+  // relay (`@johnhenry/wsh/server`). This service runs the pipe relay, which parses nothing, so neither
+  // exists here: nothing in this service can start carrying gateway messages by a version bump.
+  it('has no gateway option or feature: it is the byte-copying pipe relay, not the full wsh relay', async () => {
+    const url = import.meta.resolve('@johnhenry/wsh/pipe-relay')
+    const source = await readFile(fileURLToPath(url), 'utf-8')
+    assert.ok(!/carryGateway|relay-gateway|ServerHello|features/.test(source), 'pipe relay mentions the gateway feature')
+
+    // An option that only the full relay has is ignored: the pipe relay behaves the same with it.
+    const { createPipeRelay } = await import('@johnhenry/wsh/pipe-relay')
+    const relay = createPipeRelay({ onLog: () => {}, relay: { carryGateway: true }, carryGateway: true })
+    const { waiting, pipes } = relay.stats()
+    assert.deepEqual({ waiting, pipes }, { waiting: 0, pipes: 0 })
+    await relay.close()
+  })
+
+  it('this service loads nothing of wsh but the pipe relay (not the server, the relay or the client)', async () => {
+    const dir = fileURLToPath(new URL('.', import.meta.url))
+    for (const file of ['index.mjs', 'pipe.mjs', 'limits.mjs']) {
+      const source = await readFile(dir + file, 'utf-8')
+      const specifiers = [...source.matchAll(/['"`](@johnhenry\/wsh[^'"`]*)['"`]/g)].map(m => m[1])
+      for (const s of specifiers) assert.equal(s, '@johnhenry/wsh/pipe-relay', `${file} loads ${s}`)
+    }
+  })
+
   it('is one file with no static imports, no require and no node: builtins', async () => {
     const url = import.meta.resolve('@johnhenry/wsh/pipe-relay')
     const source = await readFile(fileURLToPath(url), 'utf-8')

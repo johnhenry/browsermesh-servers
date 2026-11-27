@@ -9,7 +9,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@johnhenry/wsh": "0.57.0",
+    "@johnhenry/wsh": "0.60.0",
     "ws": "^8.16.0"
   },
   "devDependencies": {

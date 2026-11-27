@@ -153,7 +153,18 @@ declares `node >=26` and the Docker image runs Node 26. The relay loads only
 `PIPE_RELAY=1`; `relay/wsh-module.test.mjs` fails if that stops being true, and
 the end-to-end test that pairs two real wsh peer links runs on any Node whose Web
 Crypto has ML-KEM-768 rather than on a version number. `@johnhenry/wsh` is pinned
-exactly (0.57.0) in `relay/package.json` and both lockfiles.
+exactly (0.60.0) in `relay/package.json` and both lockfiles.
+
+**wsh 0.60 `relay-gateway` does not apply here.** wsh 0.60 lets its *full* relay (`@johnhenry/wsh/server`, which parses the
+protocol and runs bridges) carry a gateway (TCP, UDP, DNS and listen opens) from an operator to a reverse host that stated the
+feature `relay-gateway`; the option is `relay: { carryGateway }`. This service does not run that relay. It runs the pipe relay,
+which copies binary frames and parses nothing: it has no hello, no feature list, no bridges and no such option, and its module
+is byte for byte the same file in 0.57.0 and 0.60.0. So updating wsh changes nothing here, there is nothing to switch on or
+off, and no variable for it. Whether a host exposes a gateway is the host owner's choice, made on the host, and what a pipe
+carries is whatever the two ends put in it. `relay/wsh-module.test.mjs` and `relay/pipe.test.mjs` fail if the service starts
+loading anything of wsh but `pipe-relay`, or if the route starts answering for itself. The 32 MiB per-recipient bound that wsh
+0.60 puts on its full relay's ordered forwards is likewise that relay's; the pipe route's own bounds are the ones in the table
+below (`PIPE_HIGH_WATER_BYTES` pauses a sender whose partner is slow, `PIPE_MAX_BYTES` ends a pipe), unchanged.
 
 **Half-close (wsh 0.57).** wsh 0.57 keeps a half-closed gateway connection open until both sides have finished or nothing has
 moved for five minutes (`gateway.halfCloseIdleMs`), where it used to end it a second after one side finished sending. That is a
@@ -161,7 +172,7 @@ rule of wsh hosts and clients, and this relay runs neither: the pipe route copie
 half-close is one frame inside a session, which the route never reads. So a half-close does not end a pair, and nothing here
 needs a `halfCloseIdleMs`. What ends a pair is the route's own: a WebSocket close by either end (the partner is closed too), a
 pipe with no byte either way for `PIPE_IDLE_TIMEOUT_MS` (300000, the same five minutes; a wsh client's keepalive pings count as
-traffic), `PIPE_MAX_LIFETIME_MS` (one hour) and `PIPE_MAX_BYTES`. The `pipe-relay` module is byte for byte the one of 0.54.2, so a
+traffic), `PIPE_MAX_LIFETIME_MS` (one hour) and `PIPE_MAX_BYTES`. The `pipe-relay` module is byte for byte the one of 0.54.2 through 0.60.0 (wsh 0.58 and 0.59 changed how hosts and clients bound and probe a half-closed connection, `halfCloseIdleMs` and `halfCloseProbeMs`; they are options of those hosts and clients, not of the pipe relay, so there is no knob to add here), so a
 client or host on an older wsh sees exactly what it saw; `relay/half-close.test.mjs` runs a real wsh host and client through the
 route with a late answer after a half-close, a half-closed and abandoned connection beside a working one, and the idle bound.
 
